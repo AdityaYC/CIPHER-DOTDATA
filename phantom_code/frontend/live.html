@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PHANTOM CODE — Live YOLO Stream</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .live-page { padding: 1rem; text-align: center; max-width: 720px; margin: 0 auto; }
+    .live-page h1 { font-size: 1rem; color: #00ff66; margin-bottom: 0.5rem; }
+    .live-page .sub { font-size: 0.75rem; color: #c0c8d4; opacity: 0.8; margin-bottom: 1rem; }
+    .live-img {
+      max-width: 100%;
+      width: 640px;
+      height: auto;
+      border: 2px solid #1a2a3a;
+      background: #0a0f19;
+    }
+    .live-links { margin-top: 1rem; font-size: 0.8rem; }
+    .live-links a { color: #00ff66; margin: 0 0.5rem; }
+    .phone-box { margin-top: 1rem; padding: 1rem; background: #0d1520; border: 1px solid #1a2a3a; text-align: left; font-size: 0.8rem; }
+    .phone-box h3 { margin: 0 0 0.5rem 0; color: #00ff66; font-size: 0.85rem; }
+    .phone-box input { width: 100%; padding: 0.4rem; margin: 0.5rem 0; background: #0a0f19; border: 1px solid #1a2a3a; color: #c0c8d4; font-family: inherit; }
+    .phone-box button { padding: 0.4rem 0.8rem; background: #00ff66; color: #0a0f19; border: none; cursor: pointer; font-family: inherit; }
+    .phone-box .hint { color: #888; margin-top: 0.5rem; }
+    .phone-box .msg { margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div class="live-page">
+    <h1>PHANTOM CODE — Live camera + YOLO</h1>
+    <p class="sub">Real-time object detection. Use computer camera or switch to your phone below.</p>
+    <img id="stream" class="live-img" src="" alt="Live stream">
+    <div class="phone-box">
+      <h3>Use your phone camera instead</h3>
+      <p>Install <b>IP Webcam</b> on your phone, start the server, and enter the URL it shows (e.g. <code>192.168.1.5:8080</code>). Phone and computer must be on the same Wi‑Fi.</p>
+      <input type="text" id="camera-url" placeholder="http://192.168.1.5:8080/video or 192.168.1.5:8080">
+      <button type="button" id="camera-connect">Connect phone camera</button>
+      <p id="camera-msg" class="msg"></p>
+      <p class="hint" id="camera-current"></p>
+    </div>
+    <div class="phone-box" style="margin-top: 0.5rem;">
+      <h3>Or: use phone camera in Safari (no app)</h3>
+      <p>On your phone (same Wi‑Fi as this computer), open Safari and go to:<br>
+        <strong id="phone-url">http://THIS_PC_IP:8000/phone</strong></p>
+      <p class="hint">Replace with your laptop’s IP (e.g. 192.168.1.100). Allow camera, keep the page open.</p>
+    </div>
+    <p class="live-links">
+      <a href="/">Tactical map</a>
+      <a href="/live">Refresh stream</a>
+    </p>
+  </div>
+  <script>
+    const img = document.getElementById("stream");
+    const base = "/api/feed/Drone-1/processed";
+    function tick() {
+      img.src = base + "?t=" + Date.now();
+    }
+    tick();
+    setInterval(tick, 100);
+
+    document.getElementById("camera-connect").addEventListener("click", async function () {
+      const input = document.getElementById("camera-url");
+      const msg = document.getElementById("camera-msg");
+      const url = (input.value || "").trim();
+      if (!url) { msg.textContent = "Enter your phone IP Webcam URL."; return; }
+      msg.textContent = "Connecting…";
+      try {
+        const r = await fetch("/api/camera", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: url }) });
+        const data = await r.json();
+        if (data.ok) {
+          msg.textContent = "Switched to phone camera. Stream may take a moment.";
+          document.getElementById("camera-current").textContent = "Current: " + data.url;
+        } else {
+          msg.textContent = "Failed: " + (data.message || "check URL and same Wi‑Fi");
+        }
+      } catch (e) {
+        msg.textContent = "Error: " + e.message;
+      }
+    });
+    fetch("/api/camera").then(r => r.json()).then(d => {
+      if (d.url) document.getElementById("camera-current").textContent = "Current: " + d.url;
+    }).catch(() => {});
+
+    var phoneUrlEl = document.getElementById("phone-url");
+    if (phoneUrlEl) {
+      fetch("/api/server-ip").then(r => r.json()).then(function(d) {
+        var scheme = d.scheme || "http";
+        var port = d.port || 8000;
+        if (d.ip) phoneUrlEl.textContent = scheme + "://" + d.ip + ":" + port + "/phone";
+        else phoneUrlEl.textContent = scheme + "://YOUR_MAC_IP:" + port + "/phone";
+      }).catch(function() {
+        phoneUrlEl.textContent = "https://YOUR_MAC_IP:8000/phone";
+      });
+    }
+  </script>
+</body>
+</html>

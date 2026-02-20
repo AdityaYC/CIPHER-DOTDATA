@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>PHANTOM — Phone camera</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 1rem;
+      background: #0a0f19;
+      color: #c0c8d4;
+      font-family: "Courier New", monospace;
+      font-size: 14px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    h1 { color: #00ff66; font-size: 1.1rem; margin-bottom: 0.5rem; }
+    .sub { opacity: 0.9; margin-bottom: 1rem; text-align: center; }
+    #preview {
+      width: 100%;
+      max-width: 320px;
+      border: 2px solid #1a2a3a;
+      border-radius: 8px;
+      background: #000;
+    }
+    .status { margin-top: 1rem; padding: 0.5rem; color: #00ff66; }
+    .status.error { color: #ff4444; }
+    .hint { margin-top: 1rem; font-size: 0.85rem; opacity: 0.8; text-align: center; }
+    canvas { display: none; }
+    .btn {
+      display: block;
+      margin: 1rem auto;
+      padding: 1rem 2rem;
+      font-size: 1.1rem;
+      font-family: inherit;
+      background: #00ff66;
+      color: #0a0f19;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .btn:active { opacity: 0.9; }
+    .btn-wrap { text-align: center; }
+    .settings-hint { font-size: 0.8rem; color: #888; margin-top: 1rem; max-width: 300px; text-align: center; }
+    .fallback-box {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      border: 1px solid #1a2a3a;
+      border-radius: 8px;
+      max-width: 300px;
+      text-align: left;
+      background: #0d1520;
+    }
+    .fallback-box h3 { color: #00ff66; font-size: 0.9rem; margin: 0 0 0.5rem 0; }
+    .fallback-box p { margin: 0.3rem 0; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>PHANTOM CODE</h1>
+  <p class="sub">Use your phone as the camera.<br>Keep this page open.</p>
+  <p id="https-hint" class="settings-hint" style="display:none; color: #00ff66;">First time here? Safari may warn about the certificate — tap <strong>Advanced</strong> then <strong>Continue</strong>. Then tap the button below.</p>
+
+  <div class="btn-wrap" id="btn-wrap">
+    <button type="button" class="btn" id="start-btn">Turn on camera</button>
+    <p class="settings-hint" id="settings-hint">Tap the button. If Safari asks for camera access, tap Allow.</p>
+    <p id="insecure-warning" class="settings-hint" style="display:none; color: #ffaa00;"></p>
+  </div>
+
+  <video id="preview" playsinline muted style="display:none;"></video>
+  <p id="status" class="status" style="display:none;"></p>
+  <p class="hint" id="hint" style="display:none;">On the laptop, open the tactical map or live stream to see this feed.</p>
+
+  <div class="fallback-box" id="fallback-box">
+    <h3>If the button doesn’t ask for camera</h3>
+    <p>On iPhone, Safari usually <strong>does not</strong> allow camera over plain HTTP (this page). Use this instead:</p>
+    <p>1. Install <strong>IP Webcam</strong> from the App Store.</p>
+    <p>2. Open IP Webcam and tap <strong>Start server</strong>.</p>
+    <p>3. Note the URL (e.g. <code>http://192.168.1.5:8080</code>).</p>
+    <p>4. On your <strong>laptop</strong>, open the Live page and paste that URL in the “Use your phone camera” box, then tap Connect.</p>
+    <p>That uses your phone’s camera without needing Safari to allow camera here.</p>
+  </div>
+
+  <canvas id="capture" width="640" height="480"></canvas>
+
+  <script>
+    const video = document.getElementById("preview");
+    const canvas = document.getElementById("capture");
+    const ctx = canvas.getContext("2d");
+    const status = document.getElementById("status");
+    const startBtn = document.getElementById("start-btn");
+    const btnWrap = document.getElementById("btn-wrap");
+    const hint = document.getElementById("hint");
+    const insecureWarning = document.getElementById("insecure-warning");
+
+    const POST_URL = "/api/phone-frame";
+    const INTERVAL_MS = 150;
+
+    var isSecure = typeof window.isSecureContext !== "undefined" && window.isSecureContext;
+    if (isSecure) {
+      document.getElementById("https-hint").style.display = "block";
+    } else {
+      insecureWarning.style.display = "block";
+      insecureWarning.textContent = "This page is not secure (HTTP). On iPhone, camera only works over HTTPS. Run scripts/generate_ssl_certs.sh on the Mac, restart the server, then open https://YOUR_MAC_IP:8000/phone — or use the IP Webcam option below.";
+    }
+
+    function setStatus(msg, isError) {
+      status.textContent = msg;
+      status.className = "status" + (isError ? " error" : "");
+      status.style.display = "block";
+    }
+
+    function startCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus("Camera API not available. Use the IP Webcam app (see below).", true);
+        return;
+      }
+      startBtn.textContent = "Requesting…";
+      startBtn.disabled = true;
+
+      var opts = { video: true, audio: false };
+      navigator.mediaDevices.getUserMedia(opts)
+        .then((stream) => {
+          btnWrap.style.display = "none";
+          document.getElementById("fallback-box").style.display = "none";
+          video.style.display = "block";
+          video.srcObject = stream;
+          video.onloadedmetadata = () => {
+            video.play();
+            setStatus("Streaming to server ✓");
+            hint.style.display = "block";
+            setInterval(sendFrame, INTERVAL_MS);
+          };
+        })
+        .catch((err) => {
+          startBtn.disabled = false;
+          startBtn.textContent = "Turn on camera";
+          var msg = "Camera failed: " + (err.name || "Error") + (err.message ? " — " + err.message : "");
+          if (err.name === "SecurityError" || err.name === "NotAllowedError") {
+            msg += " On iPhone over HTTP, Safari often blocks camera. Use the IP Webcam app instead (see below).";
+          }
+          setStatus(msg, true);
+        });
+    }
+
+    function sendFrame() {
+      if (video.readyState < 2) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      try {
+        canvas.toBlob(async (blob) => {
+          if (!blob) return;
+          try {
+            var r = await fetch(POST_URL, {
+              method: "POST",
+              body: blob,
+              headers: { "Content-Type": "image/jpeg" },
+            });
+            var data = await r.json().catch(function() { return {}; });
+            if (data.ok) setStatus("Streaming to server ✓");
+          } catch (e) {
+            setStatus("Send error: " + e.message, true);
+          }
+        }, "image/jpeg", 0.75);
+      } catch (e) {
+        setStatus("Capture error: " + e.message, true);
+      }
+    }
+
+    startBtn.addEventListener("click", startCamera);
+  </script>
+</body>
+</html>
