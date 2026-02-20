@@ -20,7 +20,7 @@ if [ ! -f "models/yolov8_det.onnx" ]; then
   python scripts/download_model.py
 fi
 
-echo "Starting PHANTOM CODE..."
+echo "Starting PHANTOM CODE (HTTP — use http://localhost:8000 in browser)..."
 echo "  Tactical map:  http://localhost:8000"
 echo "  Live stream:   http://localhost:8000/live"
-python backend/main.py
+PHANTOM_HTTP_ONLY=1 python backend/main.py

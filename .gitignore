@@ -7,13 +7,13 @@ __pycache__/
 .pytest_cache/
 
 # SSL certs (generate with scripts/generate_ssl_certs.sh)
-phantom_code/ssl/*.pem
+ssl/*.pem
 
 # IDE / OS
 .DS_Store
 *.log
 
 # Models (download with scripts/download_model.py)
-*.onnx
-*.pt
-!phantom_code/models/.gitkeep
+models/*.onnx
+models/*.pt
+!models/.gitkeep
