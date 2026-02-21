@@ -10,7 +10,8 @@ if (Test-Path "${env:ProgramFiles}\nodejs") { $env:Path = "${env:ProgramFiles}\n
 $conn = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue
 if ($conn) { $conn | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 1 }
 
-# Drone backend (includes Drone2: laptop webcam, YOLO, advisory, /api/status, etc.)
+# Drone backend (includes Drone2: laptop webcam, YOLO, advisory, /api/status, Agent tactical query, etc.)
+# PYTHONPATH must be repo root so "backend" (vector_db, query_agent) can be imported for Agent tab queries
 $env:PYTHONPATH = $root
 $env:PHANTOM_HTTP_ONLY = "1"
 Write-Host "Drone backend (with Drone2 features) starting on http://localhost:8000 ..."

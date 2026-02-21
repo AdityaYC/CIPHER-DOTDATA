@@ -5,3 +5,9 @@ numpy
 pillow
 httpx
 onnxruntime
+# Vector DB + agentic query (local only)
+chromadb
+sentence-transformers
+pydantic-settings
+# Voice input (optional; fallback if missing)
+sounddevice

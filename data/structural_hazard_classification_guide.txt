@@ -1,0 +1,25 @@
+STRUCTURAL HAZARD CLASSIFICATION GUIDE
+
+GREEN (Safe to work)
+- No visible movement; walls and floors intact.
+- No hanging debris or leaning elements.
+- Short-duration entry with buddy and communication.
+
+YELLOW (Caution / limited time)
+- Cracks, minor tilts, or loose non-structural elements.
+- Enter only for life-saving tasks; limit team size and time.
+- Designate collapse watch; withdraw on any change.
+
+RED (No entry)
+- Imminent collapse risk: severe tilt, major cracks, partial collapse.
+- Unstable overhangs, pancaked floors, or heavy debris load.
+- Operations from perimeter only (drones, cameras, listening devices).
+
+Assessment checklist
+- Foundation: shifting, settlement, cracks.
+- Load-bearing walls: bowing, rotation, missing sections.
+- Floors/roof: sagging, holes, partial collapse.
+- Secondary hazards: gas, water, electrical, hazmat.
+- Environmental: weather, aftershocks, fire.
+
+Reassessment after any event (aftershock, weather, heavy machinery).

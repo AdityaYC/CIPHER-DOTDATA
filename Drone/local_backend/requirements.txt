@@ -13,5 +13,10 @@ accelerate>=1.1.0
 # YOLO from Qualcomm or Ultralytics
 ultralytics>=8.3.0
 
+# Agent tab: tactical query (vector DB + Genie)
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+pydantic-settings>=2.0.0
+
 # Optional: for quantization/optimization (skip on Apple Silicon)
 # bitsandbytes>=0.44.0

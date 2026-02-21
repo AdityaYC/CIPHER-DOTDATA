@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from io import BytesIO
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -381,6 +381,7 @@ phantom_state = {
     "current_mission": "search_rescue",
     "last_llm_time": 0.0,
     "yolo_error": None,  # set if Drone YOLO load or run fails
+    "agent_response": {"answer": "", "node_ids": [], "ts": 0.0},  # tactical query (voice/text) for Agent tab
 }
 phantom_camera_manager = None
 phantom_yolo_detector = None
@@ -700,6 +701,15 @@ async def startup_event():
         asyncio.create_task(_world_graph_ingest_loop())
         print("  World graph: ingesting (map will populate)")
 
+    # 4) Agent tab: load emergency manuals into vector DB (optional; backend must be on PYTHONPATH)
+    try:
+        from backend.vector_db import load_manuals_from_data_dir
+        n = load_manuals_from_data_dir()
+        if n > 0:
+            print(f"  Agent (vector DB): loaded {n} manual chunks")
+    except Exception as e:
+        print(f"  Agent (vector DB): skip ({e})")
+
 
 @app.get("/getImage")
 async def get_image(x: float, y: float, z: float, yaw: float):
@@ -894,6 +904,95 @@ def api_feed_processed(drone_id: str):
     if _placeholder_jpeg is not None:
         return Response(content=_placeholder_jpeg, media_type="image/jpeg")
     raise HTTPException(status_code=503, detail="Camera not available")
+
+
+# ---------------------------------------------------------------------------
+# Agent tab: tactical query (voice/text) -> vector DB + Genie -> answer + node_ids
+# ---------------------------------------------------------------------------
+
+@app.get("/api/agent_response")
+def api_agent_response():
+    """Last agent answer and node_ids for Agent tab UI."""
+    r = phantom_state.get("agent_response", {})
+    return {"answer": r.get("answer", ""), "node_ids": r.get("node_ids", []), "ts": r.get("ts", 0)}
+
+
+@app.post("/api/voice_query")
+async def api_voice_query(request: Request):
+    """Text or audio query: runs query_agent (vector DB + Genie). Returns answer and node_ids."""
+    try:
+        content_type = request.headers.get("content-type", "")
+        text = ""
+        if "application/json" in content_type:
+            body = await request.json()
+            text = (body.get("text") or "").strip()
+        elif "multipart/form-data" in content_type:
+            form = await request.form()
+            if "audio" in form:
+                if str(_DRONE2_ROOT) not in sys.path:
+                    sys.path.insert(0, str(_DRONE2_ROOT))
+                from backend.voice_input import record_and_transcribe, transcribe_audio
+                loop = asyncio.get_event_loop()
+                file = form["audio"]
+                if file and hasattr(file, "read"):
+                    wav_bytes = await file.read()
+                    text = await loop.run_in_executor(None, transcribe_audio, wav_bytes)
+                else:
+                    text = await loop.run_in_executor(None, record_and_transcribe)
+            else:
+                text = (form.get("text") or "").strip()
+        if not text:
+            phantom_state["agent_response"] = {"answer": "No text or audio received.", "node_ids": [], "ts": time.time()}
+            return {"answer": phantom_state["agent_response"]["answer"], "node_ids": []}
+        # Ensure repo root and backend are on path so backend.query_agent and its submodules resolve
+        _root = str(_DRONE2_ROOT)
+        _backend = str(_DRONE2_ROOT / "backend")
+        for p in (_root, _backend):
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        try:
+            from backend.query_agent import query_agent
+        except ImportError:
+            import importlib.util
+            _qpath = _DRONE2_ROOT / "backend" / "query_agent.py"
+            _spec = importlib.util.spec_from_file_location("query_agent", _qpath, submodule_search_locations=[_backend])
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            query_agent = _mod.query_agent
+        def _run():
+            get_graph_callback = _world_graph.get_graph if _world_graph else None
+            return query_agent(text, top_k=3, get_graph_callback=get_graph_callback)
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        phantom_state["agent_response"] = {
+            "answer": result.get("answer", ""),
+            "node_ids": result.get("node_ids", []),
+            "ts": time.time(),
+        }
+        return {"answer": phantom_state["agent_response"]["answer"], "node_ids": phantom_state["agent_response"]["node_ids"]}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"voice_query: {e}", exc_info=True)
+        reason = str(e).strip() or type(e).__name__
+        msg = f"Query failed: {reason}. Try again."
+        phantom_state["agent_response"] = {"answer": msg, "node_ids": [], "ts": time.time()}
+        return {"answer": msg, "node_ids": [], "error": reason}
+
+
+@app.post("/api/sync_vector_graph")
+def api_sync_vector_graph():
+    """Sync world graph nodes into vector DB for semantic search."""
+    if _world_graph is None:
+        return {"synced": 0}
+    try:
+        if str(_DRONE2_ROOT) not in sys.path:
+            sys.path.insert(0, str(_DRONE2_ROOT))
+        from backend.vector_db import sync_graph_nodes
+        n = sync_graph_nodes(_world_graph.get_graph)
+        return {"synced": n}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"sync_vector_graph: {e}")
+        return {"synced": 0}
 
 
 # ---------------------------------------------------------------------------

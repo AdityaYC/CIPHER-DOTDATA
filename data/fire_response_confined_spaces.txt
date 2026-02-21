@@ -1,0 +1,26 @@
+FIRE RESPONSE IN CONFINED SPACES
+
+1. Size-up
+   - Identify fuel, ventilation, and escape routes.
+   - Confined space = limited oxygen; risk of backdraft and flashover.
+   - Do not open doors until charged hose line and PPE ready.
+
+2. Ventilation
+   - Vent from top when possible to release heat and smoke.
+   - Coordinate with attack team; avoid wind-driven spread.
+   - If entry required, use positive-pressure ventilation toward exit.
+
+3. Attack
+   - Stay low; use thermal imaging if available.
+   - Apply water in short bursts to cool; avoid steam production.
+   - Protect egress; do not advance beyond safe withdrawal time.
+
+4. Rescue
+   - Locate occupants quickly; drag or carry low.
+   - If no visibility, search along walls; use rope or tag line.
+   - Account for all personnel at rally point.
+
+5. Safety
+   - SCBA and PASS devices mandatory in IDLH.
+   - Two-out rule: two responders outside ready to rescue entry team.
+   - Evacuate immediately on unexpected structural failure or flashover signs.

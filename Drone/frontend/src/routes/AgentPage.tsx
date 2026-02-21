@@ -1,8 +1,8 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { useAgentSession } from "../hooks/useAgentSession";
 import { QueryInput } from "../components/QueryInput";
-import { MAX_AGENT_STEPS } from "../config";
+import { API_BASE_URL, MAX_AGENT_STEPS } from "../config";
 
 const STATUS_LABELS: Record<string, string> = {
   idle: "READY",
@@ -19,6 +19,12 @@ const AGENT_STATUS_LABELS: Record<string, string> = {
   error: "ERROR",
 };
 
+/** Base URL for API: use relative path in browser so Vite proxy can forward to backend */
+const agentApiBase = () =>
+  (typeof window !== "undefined" && (!API_BASE_URL || API_BASE_URL === ""))
+    ? ""
+    : (API_BASE_URL || "http://localhost:8000");
+
 export function AgentPage() {
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
 
@@ -32,6 +38,12 @@ export function AgentPage() {
     joinSession,
     cancelSession,
   } = useAgentSession();
+
+  // Agent mode: one search bar powers tactical query (manuals + map), answer shown below
+  const [agentAnswer, setAgentAnswer] = useState("");
+  const [agentNodeIds, setAgentNodeIds] = useState<string[]>([]);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentError, setAgentError] = useState("");
 
   // Auto-join session from URL on mount
   useEffect(() => {
@@ -49,9 +61,40 @@ export function AgentPage() {
 
   const agentList = useMemo(() => Array.from(agents.values()), [agents]);
 
-  const handleStart = (query: string, numAgents: number) => {
-    startSession(query, numAgents);
-  };
+  // Main Agent search: do BOTH (1) tactical query → show answer, (2) visual agent stream → feed grid
+  const handleAgentQuery = useCallback(
+    async (query: string, numAgents: number) => {
+      const text = (query || "").trim();
+      if (!text) return;
+
+      // 1) Start visual agent search (stream) so "SEARCHING..." and agent feed grid run
+      startSession(text, numAgents);
+
+      // 2) In parallel, run tactical query (manuals + map) and show answer below
+      setAgentLoading(true);
+      setAgentAnswer("");
+      setAgentNodeIds([]);
+      setAgentError("");
+      try {
+        const base = agentApiBase();
+        const res = await fetch(`${base}/api/voice_query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        setAgentAnswer(data.answer ?? "");
+        setAgentNodeIds(Array.isArray(data.node_ids) ? data.node_ids : []);
+      } catch (e) {
+        setAgentError("Tactical answer unavailable. Backend on port 8000?");
+        setAgentAnswer("");
+      } finally {
+        setAgentLoading(false);
+      }
+    },
+    [startSession],
+  );
 
   // Hide query form when viewing a shared session link
   const showQueryForm =
@@ -89,9 +132,29 @@ export function AgentPage() {
         )}
       </div>
 
-      {/* Query input */}
+      {/* Agent query: one search bar → tactical query (manuals + map), answer below */}
       {showQueryForm && (
-        <QueryInput onSubmit={handleStart} disabled={false} />
+        <QueryInput onSubmit={handleAgentQuery} disabled={agentLoading} />
+      )}
+
+      {/* Answer from tactical query (shown below search when loading or has result) */}
+      {(agentLoading || agentAnswer || agentError) && (
+        <div className="agent-answer-panel">
+          {agentLoading && (
+            <span className="agent-answer-loading">Querying...</span>
+          )}
+          {!agentLoading && agentError && (
+            <p className="agent-answer-error">{agentError}</p>
+          )}
+          {!agentLoading && agentAnswer && (
+            <>
+              <p className="agent-answer-text">{agentAnswer}</p>
+              {agentNodeIds.length > 0 && (
+                <p className="agent-answer-nodes">Nodes: {agentNodeIds.join(", ")}</p>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {/* Agent feed grid — visible when session has started */}

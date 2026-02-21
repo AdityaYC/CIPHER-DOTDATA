@@ -445,6 +445,32 @@ body {
   font-weight: 700;
 }
 
+/* Agent answer panel (result of tactical query, below main search bar) */
+.agent-answer-panel {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--swiss-border);
+  background: var(--swiss-muted);
+  font-size: 0.875rem;
+}
+.agent-answer-loading {
+  font-style: italic;
+}
+.agent-answer-error {
+  margin: 0;
+  color: var(--swiss-accent);
+  font-weight: 500;
+}
+.agent-answer-text {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+}
+.agent-answer-nodes {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--swiss-black);
+  opacity: 0.8;
+}
+
 /* ============================================
    VIEWPORT
    ============================================ */

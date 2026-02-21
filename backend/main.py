@@ -9,10 +9,11 @@ import json
 import logging
 import time
 
-# Ensure backend directory is on path when running as python backend/main.py
+# Ensure repo root is on path so "backend" package (vector_db, query_agent, etc.) resolves
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
-if _backend_dir not in sys.path:
-    sys.path.insert(0, _backend_dir)
+_project_root = os.path.dirname(_backend_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import cv2
 import numpy as np
@@ -29,8 +30,7 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Resolve paths relative to project root (phantom_code)
-_project_root = os.path.dirname(_backend_dir)
+# Resolve paths relative to project root
 _model_path = os.path.join(_project_root, "models", "yolov8_det.onnx")
 _frontend_dir = os.path.join(_project_root, "frontend")
 _drone_frontend_dir = os.path.join(_project_root, "Drone", "frontend", "dist")
@@ -64,6 +64,9 @@ state = {
     "camera_url": None,     # current source (URL or "built-in") for UI
     "phone_frame": None,    # BGR numpy array from /api/phone-frame (Safari on phone)
     "phone_frame_time": 0.0,
+    # Agentic query (voice + vector DB + Genie): for tactical map UI
+    "agent_response": {"answer": "", "node_ids": [], "ts": 0.0},
+    "get_graph_callback": None,  # set by app that has world_graph for query fallback
 }
 
 camera_manager: CameraManager | None = None
@@ -452,9 +455,87 @@ if os.path.isdir(_drone_frontend_dir):
         raise HTTPException(status_code=404, detail="Not found")
 
 
+# ---------------------------------------------------------------------------
+# Agentic query + voice (emerGen-style): vector DB, Genie, Whisper — all local
+# ---------------------------------------------------------------------------
+
+@app.get("/api/agent_response")
+def api_agent_response():
+    """Last agent answer and node_ids for UI to display and highlight nodes (e.g. 3s)."""
+    r = state.get("agent_response", {})
+    return {"answer": r.get("answer", ""), "node_ids": r.get("node_ids", []), "ts": r.get("ts", 0)}
+
+
+@app.post("/api/sync_vector_graph")
+def api_sync_vector_graph():
+    """Sync current world graph nodes into vector DB for semantic search. No-op if get_graph_callback not set."""
+    get_graph = state.get("get_graph_callback")
+    if not get_graph:
+        return {"synced": 0, "message": "No graph callback set"}
+    try:
+        from backend.vector_db import sync_graph_nodes
+        n = sync_graph_nodes(get_graph)
+        return {"synced": n}
+    except Exception as e:
+        logger.warning(f"sync_vector_graph: {e}")
+        return {"synced": 0, "error": str(e)}
+
+
+@app.post("/api/voice_query")
+async def api_voice_query(request: Request):
+    """
+    Voice or text query: optional audio file (transcribed by Whisper) or JSON { "text": "..." }.
+    Runs query_agent (vector DB + Genie); returns answer and node_ids. Stores in state for UI.
+    """
+    try:
+        content_type = request.headers.get("content-type", "")
+        text = ""
+        if "application/json" in content_type:
+            body = await request.json()
+            text = (body.get("text") or "").strip()
+        elif "multipart/form-data" in content_type:
+            form = await request.form()
+            if "audio" in form:
+                from backend.voice_input import record_and_transcribe, transcribe_audio
+                loop = asyncio.get_event_loop()
+                file = form["audio"]
+                if file and hasattr(file, "read"):
+                    wav_bytes = await file.read()
+                    text = await loop.run_in_executor(None, transcribe_audio, wav_bytes)
+                else:
+                    text = await loop.run_in_executor(None, record_and_transcribe)
+            else:
+                text = (form.get("text") or "").strip()
+        if not text:
+            return {"answer": "No text or audio received.", "node_ids": []}
+        from backend.query_agent import query_agent
+        get_graph = state.get("get_graph_callback")
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: query_agent(text, top_k=3, get_graph_callback=get_graph)
+        )
+        state["agent_response"] = {
+            "answer": result.get("answer", ""),
+            "node_ids": result.get("node_ids", []),
+            "ts": time.time(),
+        }
+        return {"answer": state["agent_response"]["answer"], "node_ids": state["agent_response"]["node_ids"]}
+    except Exception as e:
+        logger.warning(f"voice_query failed: {e}")
+        fallback = "Query failed. Try again or use text."
+        state["agent_response"] = {"answer": fallback, "node_ids": [], "ts": time.time()}
+        return {"answer": fallback, "node_ids": []}
+
+
 @app.on_event("startup")
 async def startup():
     global camera_manager, yolo_detector
+    # Vector DB: load emergency manuals from /data (local, no cloud)
+    try:
+        from vector_db import load_manuals_from_data_dir
+        n = load_manuals_from_data_dir()
+        print(f"  Vector DB: {n} manual(s) loaded from data/")
+    except Exception as e:
+        logger.warning(f"Vector DB manuals: {e}")
     print("Checking NPU...")
     if not os.path.isfile(_model_path):
         print(f"  ONNX model not found at {_model_path}. Place yolov8_det.onnx in phantom_code/models/")
