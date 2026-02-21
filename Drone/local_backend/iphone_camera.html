@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iPhone Camera Stream</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #000;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        
+        .header {
+            padding: 1rem;
+            background: #1c1c1e;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+        
+        .status {
+            padding: 0.5rem;
+            background: #2c2c2e;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+        
+        .status.connected {
+            background: #30d158;
+            color: #000;
+        }
+        
+        .status.error {
+            background: #ff453a;
+        }
+        
+        #video-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+        
+        #video {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 12px;
+        }
+        
+        .controls {
+            padding: 1rem;
+            background: #1c1c1e;
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+        
+        button {
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            background: #0a84ff;
+            color: #fff;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        button:active {
+            opacity: 0.7;
+        }
+        
+        button.stop {
+            background: #ff453a;
+        }
+        
+        .info {
+            padding: 1rem;
+            background: #2c2c2e;
+            font-size: 0.85rem;
+            text-align: center;
+            line-height: 1.5;
+        }
+        
+        .stats {
+            padding: 0.5rem 1rem;
+            background: #1c1c1e;
+            font-size: 0.75rem;
+            text-align: center;
+            color: #8e8e93;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📱 iPhone Camera → Drone Vision</h1>
+    </div>
+    
+    <div class="status" id="status">
+        Tap "Start Camera" to begin
+    </div>
+    
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+    </div>
+    
+    <div class="controls">
+        <button id="startBtn" onclick="startCamera()">Start Camera</button>
+        <button id="stopBtn" onclick="stopCamera()" class="stop" style="display:none;">Stop</button>
+    </div>
+    
+    <div class="stats" id="stats">
+        Frames sent: 0 | FPS: 0
+    </div>
+    
+    <div class="info">
+        <strong>Instructions:</strong><br>
+        1. Make sure your laptop and iPhone are on the same WiFi<br>
+        2. Tap "Start Camera" to begin streaming<br>
+        3. View the feed at: <span id="laptop-url">http://YOUR_LAPTOP_IP:8002/stream</span>
+    </div>
+
+    <script>
+        let stream = null;
+        let intervalId = null;
+        let frameCount = 0;
+        let startTime = null;
+        
+        // Get laptop IP from URL or use default
+        const SERVER_URL = 'http://10.140.252.91:8002';
+        
+        async function startCamera() {
+            try {
+                // Request camera access
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment', // Use back camera
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                
+                document.getElementById('status').textContent = 'Camera active - Streaming...';
+                document.getElementById('status').className = 'status connected';
+                document.getElementById('startBtn').style.display = 'none';
+                document.getElementById('stopBtn').style.display = 'block';
+                
+                // Start sending frames
+                startTime = Date.now();
+                frameCount = 0;
+                sendFrames();
+                
+            } catch (err) {
+                document.getElementById('status').textContent = 'Error: ' + err.message;
+                document.getElementById('status').className = 'status error';
+                console.error('Camera error:', err);
+            }
+        }
+        
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+            
+            document.getElementById('video').srcObject = null;
+            document.getElementById('status').textContent = 'Camera stopped';
+            document.getElementById('status').className = 'status';
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('stopBtn').style.display = 'none';
+        }
+        
+        function sendFrames() {
+            const video = document.getElementById('video');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            intervalId = setInterval(() => {
+                if (!stream) return;
+                
+                // Set canvas size to match video
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                // Draw current video frame to canvas
+                ctx.drawImage(video, 0, 0);
+                
+                // Convert to JPEG blob
+                canvas.toBlob(async (blob) => {
+                    if (!blob) return;
+                    
+                    // Convert to base64
+                    const reader = new FileReader();
+                    reader.onloadend = async () => {
+                        const base64 = reader.result.split(',')[1];
+                        
+                        // Send to server
+                        try {
+                            const response = await fetch(SERVER_URL + '/upload_frame', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    image_b64: base64,
+                                    timestamp: Date.now() / 1000
+                                })
+                            });
+                            
+                            if (response.ok) {
+                                frameCount++;
+                                const elapsed = (Date.now() - startTime) / 1000;
+                                const fps = (frameCount / elapsed).toFixed(1);
+                                document.getElementById('stats').textContent = 
+                                    `Frames sent: ${frameCount} | FPS: ${fps}`;
+                            }
+                        } catch (err) {
+                            console.error('Upload error:', err);
+                            document.getElementById('status').textContent = 
+                                'Connection error - check laptop IP';
+                            document.getElementById('status').className = 'status error';
+                        }
+                    };
+                    reader.readAsDataURL(blob);
+                }, 'image/jpeg', 0.7);
+                
+            }, 100); // 10 FPS
+        }
+        
+        // Update laptop URL in info
+        if (SERVER_URL !== 'http://10.140.252.91:8002') {
+            const streamUrl = SERVER_URL.replace(':8002', ':8002/stream');
+            document.getElementById('laptop-url').textContent = streamUrl;
+        }
+    </script>
+</body>
+</html>

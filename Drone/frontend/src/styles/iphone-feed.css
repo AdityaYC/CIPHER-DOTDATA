@@ -1,0 +1,104 @@
+/* iPhone Camera Feed Styles */
+
+.iphone-feed {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--swiss-black);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.iphone-feed.main-feed {
+  min-height: 400px;
+}
+
+.feed-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.feed-image.connected {
+  opacity: 1;
+}
+
+.feed-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  color: var(--swiss-white);
+}
+
+.feed-loading .loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--swiss-white);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.feed-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--swiss-accent);
+  text-align: center;
+  padding: 2rem;
+}
+
+.feed-error-hint {
+  font-size: 0.875rem;
+  color: var(--swiss-white);
+  opacity: 0.7;
+}
+
+.feed-status {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--swiss-white);
+  letter-spacing: 0.05em;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--swiss-white);
+}
+
+.status-indicator.live {
+  background: var(--swiss-accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}

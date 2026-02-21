@@ -1,0 +1,30 @@
+# Requirements for Qualcomm NPU acceleration on Snapdragon X Elite
+# Windows Copilot+ PC (Surface Laptop)
+
+# Core dependencies (same as before)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+pillow>=11.0.0
+numpy>=2.1.0
+
+# Llama Vision inference
+transformers>=4.46.0
+torch>=2.5.0
+accelerate>=1.1.0
+
+# Standard YOLO (fallback)
+ultralytics>=8.3.0
+
+# NPU Acceleration - Qualcomm AI Hub
+# NOTE: Only works on Windows with AMD64 Python (not ARM64 Python)
+# Install separately: pip install qai_hub_models
+# Then: pip install "qai_hub_models[yolov8]"
+# qai_hub_models>=0.12.0
+
+# ONNX Runtime with QNN (alternative NPU backend)
+# onnxruntime-qnn>=1.17.0
+
+# World Graph dependencies
+opencv-python>=4.8.0  # For webcam test
+requests>=2.31.0  # For API testing

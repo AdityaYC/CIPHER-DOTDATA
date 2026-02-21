@@ -5,9 +5,9 @@
 import platform
 
 # --- Mac vs Windows ---
-# On Mac (no phones): use built-in webcam so you get a working prototype.
-# On Windows with phones: use IP Webcam URLs.
+# When no IP camera URL is set, use built-in laptop webcam (index 0) on all platforms.
 USE_MAC_WEBCAM_DEMO = platform.system() == "Darwin"
+USE_BUILTIN_WEBCAM = True  # use laptop webcam when no IP camera URL
 
 # --- Optional: Use an IP Webcam URL for demo (like your previous iteration) ---
 # Set this to your phone's IP Webcam URL to use that stream instead of built-in camera.
@@ -24,7 +24,7 @@ if IP_CAMERA_URL:
         "Drone-1": IP_CAMERA_URL,
         "Drone-2": IP_CAMERA_URL,
     }
-elif USE_MAC_WEBCAM_DEMO:
+elif USE_MAC_WEBCAM_DEMO or USE_BUILTIN_WEBCAM:
     CAMERA_FEEDS = {
         "Drone-1": 0,
         "Drone-2": 0,

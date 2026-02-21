@@ -1,0 +1,11 @@
+# Core deps from depth_pro (pyproject.toml requires numpy<2)
+numpy>=1.26,<2
+torch>=2.0
+torchvision>=0.15
+timm>=1.0
+pillow>=10.0
+pillow_heif>=1.0
+matplotlib>=3.7
+
+# opencv-python 4.11+ requires numpy>=2, so pin to 4.10.x
+opencv-python>=4.8,<4.11
