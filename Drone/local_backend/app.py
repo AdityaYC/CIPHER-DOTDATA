@@ -766,15 +766,13 @@ async def get_image(x: float, y: float, z: float, yaw: float):
 
 @app.post("/stream_agents")
 async def stream_agents(request: AgentRequest):
-    """Stream agent exploration events (SSE)."""
+    """Stream agent exploration events (SSE). Works with or without trajectory data / Llama."""
     from agent_runner import AgentRunner
     import asyncio
-    
+
     async def event_generator():
-        session_id = str(uuid.uuid4())
-        runner = AgentRunner(models, image_db)
         winner_agent_id = None
-        
+
         # Send agent_started events
         for agent_id in range(request.num_agents):
             agent_yaw = (request.start_yaw + (agent_id % 2) * 180) % 360
@@ -785,16 +783,21 @@ async def stream_agents(request: AgentRequest):
                     "x": request.start_x,
                     "y": request.start_y,
                     "z": request.start_z,
-                    "yaw": agent_yaw
+                    "yaw": agent_yaw,
                 },
             }
             yield f"data: {json.dumps(event)}\n\n"
-        
-        # Run agents (simplified - run sequentially for now)
-        # In production, you'd want to run them in parallel
+
+        # If no trajectory frames, send agent_done for each and complete (so UI still works)
+        if not getattr(image_db, "db", None) or len(image_db.db) == 0:
+            for agent_id in range(request.num_agents):
+                yield f"data: {json.dumps({'type': 'agent_done', 'agent_id': agent_id, 'found': False, 'steps': 0, 'trajectory': []})}\n\n"
+            yield f"data: {json.dumps({'type': 'session_complete', 'winner_agent_id': None, 'description': 'No trajectory data loaded. Add frames to Drone/data or use Manual tab to capture.'})}\n\n"
+            return
+
+        runner = AgentRunner(models, image_db)
         for agent_id in range(request.num_agents):
             agent_yaw = (request.start_yaw + (agent_id % 2) * 180) % 360
-            
             try:
                 for event in runner.run_agent(
                     query=request.query,
@@ -806,44 +809,21 @@ async def stream_agents(request: AgentRequest):
                     max_steps=MAX_STEPS,
                 ):
                     yield f"data: {json.dumps(event)}\n\n"
-                    
-                    # Check if this agent found the target
                     if event.get("type") == "agent_found" and winner_agent_id is None:
                         winner_agent_id = agent_id
-                        # In a real implementation, you'd cancel other agents here
                         break
-                    
-                    # Small delay to prevent overwhelming the client
                     await asyncio.sleep(0.1)
-                
-                # If winner found, stop launching more agents
                 if winner_agent_id is not None:
                     break
-                    
             except Exception as e:
-                error_event = {
-                    "type": "error",
-                    "agent_id": agent_id,
-                    "message": str(e),
-                }
-                yield f"data: {json.dumps(error_event)}\n\n"
-        
-        # Send session complete
-        complete_event = {
-            "type": "session_complete",
-            "winner_agent_id": winner_agent_id,
-            "description": "Target found" if winner_agent_id is not None else "No target found",
-        }
-        yield f"data: {json.dumps(complete_event)}\n\n"
-    
+                yield f"data: {json.dumps({'type': 'error', 'agent_id': agent_id, 'message': str(e)})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'session_complete', 'winner_agent_id': winner_agent_id, 'description': 'Target found' if winner_agent_id is not None else 'No target found'})}\n\n"
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
-        },
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*"},
     )
 
 

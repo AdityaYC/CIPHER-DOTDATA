@@ -4,101 +4,102 @@ On-device AI tactical system: live webcam, YOLO object detection, tactical map, 
 
 ---
 
-## How to start
+## How to run
 
-**Windows (PowerShell) — from the repo root:**
+### Option 1: Run everything (backend + frontend)
+
+From the **repo root** in PowerShell:
 
 ```powershell
 .\run_drone_full.ps1
 ```
 
-- A **backend** window opens (port 8000).
-- This terminal starts the **Cipher frontend** (Vite). If port 5173 is in use, Vite may use 5174 or 5175 — check the terminal for the URL.
-- **Open in your browser** the URL shown (e.g. **http://localhost:5173** or **http://localhost:5174**).
-- Go to **Manual** → click **START AI** for live webcam and YOLO detections.
-
-**If you see “Backend not running” or connection errors:**
-
-1. Make sure the **backend window** is open and shows no Python errors.
-2. Or start only the backend in a separate terminal:
-   ```powershell
-   .\start_backend.ps1
-   ```
-3. Refresh the Manual page.
-
-**Requirements:** Python 3.12 (or 3.10+), Node.js (for the frontend). Install YOLO once: `py -m pip install ultralytics`.
+- A **backend** window opens on **http://localhost:8000**
+- This terminal starts the **frontend** (Vite). Note the URL (e.g. **http://localhost:5173** or **http://localhost:5174**)
+- **Open that URL in your browser** → go to **Manual** → click **START AI** for webcam + YOLO
 
 ---
 
-## First-time setup (after clone)
+### Option 2: Run backend and frontend separately
+
+**Terminal 1 — Backend (from repo root):**
+
+```powershell
+cd "C:\Users\hackathon user\Drone2"
+$env:PYTHONPATH = (Get-Location).Path
+.\start_backend.ps1
+```
+
+Or manually:
+
+```powershell
+cd "C:\Users\hackathon user\Drone2"
+$env:PYTHONPATH = (Get-Location).Path
+py -3.12 -m uvicorn Drone.local_backend.app:app --host 0.0.0.0 --port 8000
+```
+
+Backend runs at **http://localhost:8000**.
+
+**Terminal 2 — Frontend (from repo root):**
+
+```powershell
+cd "C:\Users\hackathon user\Drone2\Drone\frontend"
+npm run dev
+```
+
+Frontend runs at **http://localhost:5173** (or 5174 if 5173 is in use). Open that URL in your browser.
+
+---
+
+## First-time setup
 
 From the **repo root**:
 
 ```powershell
-# Optional: create venv
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# Backend deps
+# Backend: Python deps (use your Python 3.12 path or py -3.12)
 pip install -r Drone\local_backend\requirements.txt
 py -m pip install ultralytics
 
-# Frontend deps (once)
+# Frontend: Node deps (once)
 cd Drone\frontend
 npm install
 cd ../..
 ```
 
-Then run `.\run_drone_full.ps1` as above.
+**Requirements:** Python 3.12 (install from [python.org](https://www.python.org/downloads/), not the Microsoft Store), Node.js, webcam.
 
 ---
 
 ## What’s in the app
 
-| Page    | Description |
-|---------|-------------|
-| **Landing** | Cipher home; link to launch. |
-| **Manual**  | Live webcam, YOLO boxes, tactical map, mission selector. Click **START AI** to enable feed and detections. |
-| **Agent**   | Tactical query and agent exploration. |
+| Page     | Description |
+|----------|-------------|
+| **Landing** | Cipher home. |
+| **Manual**  | Live webcam, YOLO detections, tactical map. Click **START AI**. |
+| **Agent**   | Type a question → tactical answer + agent exploration. |
 | **Replay**  | Trajectory replay. |
 
-Backend serves the API (camera, YOLO, status, detections) on **http://localhost:8000**. The Cipher UI runs on the port Vite prints (usually 5173).
+- **Backend:** http://localhost:8000 (API, webcam, YOLO, Agent query)
+- **Frontend:** http://localhost:5173 or 5174 (Cipher UI)
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|--------|-----|
+| "Python was not found" | Install Python 3.12 from python.org. Disable the Store alias in Settings → App execution aliases. |
+| "Backend not running" | Start backend first: `.\start_backend.ps1` or run the `py -3.12 -m uvicorn ...` command above. |
+| Port 5173 in use | Vite will use 5174 or 5175 — use the URL shown in the terminal. |
+| YOLO not loading | Run `py -m pip install ultralytics`. The first run downloads `yolov8n.pt`. |
 
 ---
 
 ## Project layout
 
-| Path                 | Description |
-|----------------------|-------------|
-| `Drone/frontend`     | Cipher React UI (Vite). |
-| `Drone/local_backend`| Backend used by `run_drone_full.ps1` (FastAPI, webcam, YOLO). |
-| `backend/`           | Optional alternate backend (root). |
-| `run_drone_full.ps1` | Start backend + Cipher frontend. |
-| `start_backend.ps1`  | Start only the backend (when frontend is already running). |
-
----
-
-## Commands
-
-| Action        | Command |
-|---------------|--------|
-| Run app       | `.\run_drone_full.ps1` |
-| Backend only  | `.\start_backend.ps1` |
-| Install YOLO  | `py -m pip install ultralytics` |
-| Backend deps  | `pip install -r Drone\local_backend\requirements.txt` |
-
----
-
-## API (backend)
-
-- `GET /health` — Backend health.
-- `GET /api/status` — Feed status, YOLO latency.
-- `GET /api/feed/{drone_id}/processed` — Live frame with YOLO overlay.
-- `GET /live_detections` — SSE stream of detections (used when you click START AI).
-
----
-
-## Requirements
-
-- **Windows:** Python 3.12 (or 3.10/3.11/3.13), Node.js, webcam. `ultralytics` for YOLO.
-- **Mac/Linux:** Same; built-in webcam and CPU inference supported.
+| Path                  | Description |
+|-----------------------|-------------|
+| `Drone/frontend`      | Cipher React UI (Vite). |
+| `Drone/local_backend` | Backend (FastAPI, webcam, YOLO, Agent). |
+| `run_drone_full.ps1`  | Start backend + frontend. |
+| `start_backend.ps1`   | Start backend only. |

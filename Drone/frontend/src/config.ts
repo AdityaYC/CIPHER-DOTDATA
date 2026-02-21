@@ -15,11 +15,11 @@ export const BACKEND_FEED_BASE =
 
 export const AGENT_STREAM_URL =
   import.meta.env.VITE_AGENT_STREAM_URL ??
-  (typeof window !== "undefined" ? "/stream_agents" : "http://localhost:8000/stream_agents");
+  (isDevOrigin ? "http://localhost:8000/stream_agents" : typeof window !== "undefined" ? "/stream_agents" : "http://localhost:8000/stream_agents");
 
 export const AGENT_API_URL =
   import.meta.env.VITE_AGENT_API_URL ??
-  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
+  (isDevOrigin ? "http://localhost:8000" : typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 export const MOVE_STEP = 0.5;
 export const VERTICAL_STEP = 0.5;

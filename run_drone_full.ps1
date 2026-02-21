@@ -10,18 +10,31 @@ if (Test-Path "${env:ProgramFiles}\nodejs") { $env:Path = "${env:ProgramFiles}\n
 $conn = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue
 if ($conn) { $conn | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 1 }
 
-# Find Python (3.12): use "python" if on PATH, else common install locations
+# Find Python: prefer real installs (avoid Windows Store "python" stub that says "Python was not found")
 $pythonExe = $null
-try {
-    if (Get-Command python -ErrorAction Stop) { $pythonExe = "python" }
-} catch { }
-if (-not $pythonExe) {
-    foreach ($p in @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", "$env:ProgramFiles\Python312\python.exe")) {
-        if (Test-Path $p) { $pythonExe = $p; break }
-    }
+foreach ($p in @(
+    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+    "$env:ProgramFiles\Python312\python.exe",
+    "$env:ProgramFiles\Python311\python.exe"
+)) {
+    if (Test-Path $p) { $pythonExe = $p; break }
 }
 if (-not $pythonExe) {
-    Write-Host "Python not found. Install Python 3.12 and run .\scripts\add_python_to_path.ps1 or set PATH." -ForegroundColor Red
+    try {
+        $pyOut = & py -3.12 -c "import sys; print(sys.executable)" 2>$null
+        if ($pyOut) { $pythonExe = $pyOut.Trim() }
+    } catch { }
+}
+if (-not $pythonExe) {
+    try {
+        $ver = & python --version 2>&1
+        if ($ver -notmatch "Microsoft Store|not found") { $pythonExe = "python" }
+    } catch { }
+}
+if (-not $pythonExe) {
+    Write-Host "Python not found. Install Python 3.12 from python.org (not the Store)." -ForegroundColor Red
     exit 1
 }
 # If we use a full path, add Python and Scripts to PATH for this session so backend and tools work

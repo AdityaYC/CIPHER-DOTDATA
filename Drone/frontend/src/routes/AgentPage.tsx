@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { useAgentSession } from "../hooks/useAgentSession";
 import { QueryInput } from "../components/QueryInput";
-import { API_BASE_URL, MAX_AGENT_STEPS } from "../config";
+import { AGENT_API_URL, MAX_AGENT_STEPS } from "../config";
 
 const STATUS_LABELS: Record<string, string> = {
   idle: "READY",
@@ -19,11 +19,8 @@ const AGENT_STATUS_LABELS: Record<string, string> = {
   error: "ERROR",
 };
 
-/** Base URL for API: use relative path in browser so Vite proxy can forward to backend */
-const agentApiBase = () =>
-  (typeof window !== "undefined" && (!API_BASE_URL || API_BASE_URL === ""))
-    ? ""
-    : (API_BASE_URL || "http://localhost:8000");
+/** Backend base for Agent (tactical query + stream). Same as AGENT_API_URL so voice_query hits port 8000 in dev. */
+const agentApiBase = () => (typeof window !== "undefined" ? AGENT_API_URL || window.location.origin : "http://localhost:8000");
 
 export function AgentPage() {
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
@@ -82,12 +79,24 @@ export function AgentPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
         });
-        if (!res.ok) throw new Error(res.statusText);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = data?.answer || data?.detail || res.statusText || "Request failed";
+          setAgentError(typeof msg === "string" ? msg : "Tactical answer unavailable.");
+          setAgentAnswer("");
+          return;
+        }
         setAgentAnswer(data.answer ?? "");
         setAgentNodeIds(Array.isArray(data.node_ids) ? data.node_ids : []);
+        setAgentError("");
       } catch (e) {
-        setAgentError("Tactical answer unavailable. Backend on port 8000?");
+        const msg = e instanceof Error ? e.message : String(e);
+        const isNetwork = /failed|fetch|network|refused/i.test(msg);
+        setAgentError(
+          isNetwork
+            ? "Can't reach backend. Start it with .\\run_drone_full.ps1 or .\\start_backend.ps1 (port 8000)."
+            : msg || "Tactical answer unavailable."
+        );
         setAgentAnswer("");
       } finally {
         setAgentLoading(false);

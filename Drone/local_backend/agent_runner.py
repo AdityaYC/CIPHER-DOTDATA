@@ -84,19 +84,28 @@ class AgentRunner:
             )
             
             # Run YOLO detection (helps with object recognition)
-            detections = self.models.detect_objects(image)
-            detected_objects = [d["class"] for d in detections if d["confidence"] > 0.5]
-            
-            # Build prompt for Llama Vision
-            prompt = self._build_prompt(
-                query, step, max_steps, x, y, z, yaw, allowed, detected_objects, visited_positions
-            )
-            
-            # Run Llama Vision inference
-            response = self.models.infer_llama(image, prompt)
-            
-            # Parse action
-            action = self._parse_action(response)
+            try:
+                detections = self.models.detect_objects(image)
+            except Exception:
+                detections = []
+            detected_objects = [d["class"] for d in detections if d.get("confidence", 0) > 0.5]
+
+            # Llama Vision inference (optional; on Windows/mlx-unavailable use YOLO-only fallback)
+            action = None
+            try:
+                prompt = self._build_prompt(
+                    query, step, max_steps, x, y, z, yaw, allowed, detected_objects, visited_positions
+                )
+                response = self.models.infer_llama(image, prompt)
+                action = self._parse_action(response)
+            except Exception:
+                # Fallback when Llama/Vision unavailable: YOLO-only "found" or turn to explore
+                q_lower = query.lower()
+                if any(cls.lower() in q_lower or q_lower in cls.lower() or ("person" in q_lower and cls.lower() == "person") for cls in detected_objects):
+                    action = {"action": "found", "reasoning": f"YOLO detected: {', '.join(detected_objects)}.", "description": f"Found {', '.join(detected_objects)}"}
+                else:
+                    new_yaw = (yaw + 90) % 360 if allowed.get("turnRight") else (yaw - 90) % 360
+                    action = {"action": "move", "x": x, "y": y, "z": z, "yaw": new_yaw, "reasoning": "Exploring (vision model unavailable)."}
             
             # Prepare step event
             import base64
