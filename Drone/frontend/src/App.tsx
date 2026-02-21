@@ -13,7 +13,7 @@ export function App() {
     <div className="app-shell">
       {!isLanding && (
         <header className="top-bar">
-          <h1 className="logo">DRONE VISION</h1>
+          <h1 className="logo">CIPHER</h1>
           <ModeSwitch />
         </header>
       )}

@@ -1,9 +1,15 @@
 /**
- * Drone2 / PHANTOM CODE APIs: status, detections, advisory, mission, feed
+ * Tactical APIs: status, detections, advisory, mission, feed (same backend as Manual AI)
  */
 
+const isDevOrigin =
+  typeof window !== "undefined" &&
+  window.location.hostname === "localhost" &&
+  window.location.port !== "" &&
+  window.location.port !== "80" &&
+  window.location.port !== "443";
 const TACTICAL_BASE =
-  import.meta.env.VITE_TACTICAL_API ?? "";
+  import.meta.env.VITE_TACTICAL_API ?? (isDevOrigin ? "http://localhost:8000" : "");
 
 export type TacticalStatus = {
   feeds: Record<string, boolean>;

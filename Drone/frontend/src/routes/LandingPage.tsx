@@ -9,10 +9,10 @@ export function LandingPage() {
         <div className="hero-content">
           <span className="hero-label">01. SYSTEM</span>
           <h1 className="hero-title">
-            DRONE VISION
+            CIPHER
           </h1>
           <p className="hero-description">
-            AI-powered drone navigation system with real-time object detection.
+            AI-powered tactical system with real-time object detection.
             NPU-accelerated YOLO processing with Llama Vision reasoning.
             Engineered for autonomous exploration and spatial mapping.
           </p>

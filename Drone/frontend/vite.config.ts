@@ -7,6 +7,7 @@ export default defineConfig({
     allowedHosts: [".ngrok-free.app"],
     proxy: {
       "/api": "http://localhost:8000",
+      "/live_detections": "http://localhost:8000",
       "/stream_agents": "http://localhost:8000",
       "/sessions": "http://localhost:8000",
       "/graph": "http://localhost:8000",

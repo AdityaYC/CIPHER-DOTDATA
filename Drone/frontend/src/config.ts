@@ -1,6 +1,13 @@
+// In dev (Vite on 5173, 5174, etc.) use backend on 8000 so SSE and feed work
+const isDevOrigin =
+  typeof window !== "undefined" &&
+  window.location.hostname === "localhost" &&
+  window.location.port !== "" &&
+  window.location.port !== "80" &&
+  window.location.port !== "443";
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ??
-  (typeof window !== "undefined" ? "" : "http://localhost:8000");
+  (isDevOrigin ? "http://localhost:8000" : typeof window !== "undefined" ? "" : "http://localhost:8000");
 
 /** When set (including ""), Manual page uses this backend's /api/feed/Drone-1/processed instead of iPhone stream */
 export const BACKEND_FEED_BASE =

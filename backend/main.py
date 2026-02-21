@@ -23,16 +23,15 @@ from perception import YOLODetector
 import detection_mapper
 from llm_advisory import get_advisory
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Resolve paths relative to project root
+# Resolve paths relative to project root (only Drone UI is used)
 _model_path = os.path.join(_project_root, "models", "yolov8_det.onnx")
-_frontend_dir = os.path.join(_project_root, "frontend")
 _drone_frontend_dir = os.path.join(_project_root, "Drone", "frontend", "dist")
 _ssl_dir = os.path.join(_project_root, "ssl")
 _ssl_certfile = os.path.join(_ssl_dir, "cert.pem")
@@ -352,40 +351,14 @@ def api_feed_processed(drone_id: str):
 
 @app.get("/")
 def index():
-    # Prefer Drone React app when built
-    if os.path.isdir(_drone_frontend_dir):
-        path = os.path.join(_drone_frontend_dir, "index.html")
-        if os.path.isfile(path):
-            return FileResponse(path)
-    path = os.path.join(_frontend_dir, "index.html")
+    """Serve Drone React UI only. Build with: cd Drone/frontend && npm run build"""
+    path = os.path.join(_drone_frontend_dir, "index.html")
     if os.path.isfile(path):
         return FileResponse(path)
-    return Response(content="Frontend not found", status_code=404)
-
-
-@app.get("/style.css")
-def style():
-    path = os.path.join(_frontend_dir, "style.css")
-    if os.path.isfile(path):
-        return FileResponse(path)
-    return Response(status_code=404)
-
-
-@app.get("/app.js")
-def app_js():
-    path = os.path.join(_frontend_dir, "app.js")
-    if os.path.isfile(path):
-        return FileResponse(path)
-    return Response(status_code=404)
-
-
-@app.get("/live")
-def live():
-    """Live camera stream with YOLO processing — open this link for demo (like an IP Webcam view)."""
-    path = os.path.join(_frontend_dir, "live.html")
-    if os.path.isfile(path):
-        return FileResponse(path)
-    return Response(status_code=404)
+    return Response(
+        content="<html><body><h1>Cipher</h1><p>Build the UI: <code>cd Drone/frontend && npm install && npm run build</code></p><p>Or run <code>run_drone_full.ps1</code> and open http://localhost:5173</p><p><a href='/health'>/health</a></p></body></html>",
+        media_type="text/html",
+    )
 
 
 @app.post("/api/phone-frame")
@@ -411,28 +384,14 @@ async def api_phone_frame(request: Request):
 
 @app.get("/phone")
 def phone():
-    """Open this link on your phone in Safari to use your phone camera — no app needed."""
-    path = os.path.join(_frontend_dir, "phone.html")
-    if os.path.isfile(path):
-        return FileResponse(path)
-    return Response(status_code=404)
+    """Redirect to Drone Manual tab (live/phone feed)."""
+    return RedirectResponse(url="/manual", status_code=302)
 
 
-@app.get("/phantom")
-def phantom_index():
-    """Legacy tactical map (PHANTOM CODE HTML)."""
-    path = os.path.join(_frontend_dir, "index.html")
-    if os.path.isfile(path):
-        return FileResponse(path)
-    return Response(status_code=404)
-
-
-@app.get("/phantom/live")
-def phantom_live():
-    path = os.path.join(_frontend_dir, "live.html")
-    if os.path.isfile(path):
-        return FileResponse(path)
-    return Response(status_code=404)
+@app.get("/live")
+def live():
+    """Redirect to Drone Manual tab (live stream)."""
+    return RedirectResponse(url="/manual", status_code=302)
 
 
 # SPA fallback for Drone React app when dist exists

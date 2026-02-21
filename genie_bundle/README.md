@@ -14,10 +14,11 @@ This folder holds the Qualcomm Genie runtime and Llama 3.2 3B model binaries so 
 
 From repo root:
 
-```bash
-py -m pip install huggingface_hub
+```powershell
+python -m pip install huggingface_hub
 python scripts/setup_genie_bundle.py
 ```
+(Use `python` from your Python 3.12 install. If you have the launcher: `py -3.12 -m pip ...`)
 
 This creates `genie_bundle/` (if needed), keeps `genie_config.json`, and downloads **tokenizer.json** from Hugging Face. The Agent tab will still work without Genie (vector search + manuals); Genie is optional for full LLM answers.
 
@@ -26,21 +27,18 @@ This creates `genie_bundle/` (if needed), keeps `genie_config.json`, and downloa
 1. **Install QAIRT SDK**  
    - [QAIRT SDK](https://developer.qualcomm.com/software/qualcomm-ai-research-toolkit) and follow the Windows/Linux setup guide.
 
-2. **Use Python 3.10, 3.11, 3.12, or 3.13**  
-   `qai-hub-models` does not support Python 3.9 or 3.14+. Check: `py -0` or `python --version`. Use `py -3.11` (or 3.10/3.12/3.13) if needed.
+2. **Use Python 3.12** (project default; 3.10, 3.11, 3.13 also work.)  
+   Check: `py -3.12 --version`. `qai-hub-models` does not support 3.9 or 3.14+.
 
 3. **Install qai-hub and export Llama 3.2 3B to Genie binaries**  
+   From repo root (use `python` from your Python 3.12 install; or `py -3.12` if you have the launcher):
    ```powershell
-   py -3.11 -m pip install qai-hub
-   py -3.11 -m pip install -U "qai-hub-models[llama-v3-2-3b-instruct]"
-   py -3.11 -m qai_hub configure --api_token YOUR_TOKEN
-   ```
-   Then from the **repo root** (where `genie_bundle` lives):
-   ```powershell
+   python -m pip install qai-hub
+   python -m pip install -U "qai-hub-models[llama-v3-2-3b-instruct]"
+   python -m qai_hub configure --api_token YOUR_TOKEN
    mkdir -Force genie_bundle
-   py -3.11 -m qai_hub_models.models.llama_v3_2_3b_instruct.export --chipset qualcomm-snapdragon-x-elite --skip-inferencing --skip-profiling --output-dir genie_bundle
+   python -m qai_hub_models.models.llama_v3_2_3b_instruct.export --chipset qualcomm-snapdragon-x-elite --skip-inferencing --skip-profiling --output-dir genie_bundle
    ```
-   (Replace `3.11` with your 3.10/3.12/3.13 if different.)
 
 4. **Copy Genie runtime into this folder**  
    - Copy `genie-t2t-run.exe` and required DLLs from `$QNN_SDK_ROOT` (or QAIRT) into this `genie_bundle/` folder.  

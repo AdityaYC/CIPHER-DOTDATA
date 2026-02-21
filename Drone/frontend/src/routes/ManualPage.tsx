@@ -8,7 +8,13 @@ import { fetchTacticalStatus, fetchTacticalAdvisory, fetchTacticalDetections, se
 const MAIN_BACKEND = API_BASE_URL || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 const USE_BACKEND_FEED = BACKEND_FEED_BASE !== undefined && BACKEND_FEED_BASE !== null;
 
-// Drone2 tactical map (from frontend/app.js): zone layout and scale for panel
+/** Placeholder when backend is down — avoids ERR_CONNECTION_REFUSED spam */
+const BACKEND_DOWN_PLACEHOLDER =
+  "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><rect fill="#0a0f19" width="640" height="480"/><text x="320" y="220" fill="rgba(255,255,255,0.9)" font-family="sans-serif" font-size="18" text-anchor="middle">Backend not running on port 8000</text><text x="320" y="260" fill="rgba(255,255,255,0.6)" font-family="sans-serif" font-size="14" text-anchor="middle">Start it from repo root:</text><text x="320" y="295" fill="#00ff66" font-family="monospace" font-size="13" text-anchor="middle">.\\run_drone_full.ps1</text><text x="320" y="330" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-size="12" text-anchor="middle">(or open a terminal and run the backend, then refresh)</text></svg>'
+  );
+
+// Tactical map: zone layout and scale for panel
 const TACTICAL_MAP_WIDTH = 800;
 const TACTICAL_MAP_HEIGHT = 600;
 const TACTICAL_MAP_SCALE = 0.5; // panel canvas 400x300
@@ -65,15 +71,41 @@ export function ManualPage() {
   // Drone2 tactical map canvas
   const mapCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Backend feed tick: ~4 FPS to reduce flicker (was 100ms)
+  // Backend reachable: when false, show placeholder and don't hammer 8000 (fixes ERR_CONNECTION_REFUSED spam)
+  const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!USE_BACKEND_FEED || !MAIN_BACKEND) {
+      setBackendReachable(true);
+      return;
+    }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const r = await fetch(`${MAIN_BACKEND}/health`, { signal: AbortSignal.timeout(3000) });
+        if (!cancelled) setBackendReachable(r.ok);
+      } catch {
+        if (!cancelled) setBackendReachable(false);
+      }
+    };
+    check();
+    const t = setInterval(() => {
+      if (backendReachable === false) check(); // re-check every 5s when down so we recover when user starts backend
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [USE_BACKEND_FEED, MAIN_BACKEND, backendReachable]);
+
+  // Backend feed tick: only when backend is reachable to avoid connection refused spam
   const [feedTick, setFeedTick] = useState(0);
   useEffect(() => {
-    if (!USE_BACKEND_FEED) return;
+    if (!USE_BACKEND_FEED || backendReachable !== true) return;
     const t = setInterval(() => setFeedTick((n) => n + 1), 250);
     return () => clearInterval(t);
-  }, []);
+  }, [backendReachable]);
 
-  // Drone2 tactical features (advisory, mission, status, detections for map) — poll when on Manual
+  // Tactical features — poll only when backend reachable; when down, poll slowly just to re-detect
   const [tacticalStatus, setTacticalStatus] = useState<TacticalStatus | null>(null);
   const [tacticalDetections, setTacticalDetections] = useState<TacticalDetections | null>(null);
   const [advisory, setAdvisory] = useState<TacticalAdvisory | null>(null);
@@ -81,14 +113,22 @@ export function ManualPage() {
   useEffect(() => {
     const poll = async () => {
       const [s, a, d] = await Promise.all([fetchTacticalStatus(), fetchTacticalAdvisory(), fetchTacticalDetections()]);
-      if (s) setTacticalStatus(s);
+      if (s) {
+        setTacticalStatus(s);
+        if (backendReachable === false) setBackendReachable(true);
+      }
       if (a) setAdvisory(a);
       if (d) setTacticalDetections(d);
     };
+    if (backendReachable === false) {
+      const t = setInterval(poll, 5000);
+      return () => clearInterval(t);
+    }
+    if (backendReachable !== true) return;
     poll();
     const t = setInterval(poll, 1500);
     return () => clearInterval(t);
-  }, []);
+  }, [backendReachable]);
   const handleMissionClick = useCallback(async (id: string) => {
     setSelectedMission(id);
     await setMission(id);
@@ -177,7 +217,7 @@ export function ManualPage() {
 
   useEffect(() => () => { sseRef.current?.close(); }, []);
 
-  // Draw Drone2 tactical map (zones + detections at map_x, map_y) — from Drone2 frontend/app.js
+  // Draw tactical map (zones + detections at map_x, map_y)
   useEffect(() => {
     const canvas = mapCanvasRef.current;
     if (!canvas) return;
@@ -331,6 +371,28 @@ export function ManualPage() {
 
   return (
     <section className="manual-page">
+      {USE_BACKEND_FEED && backendReachable === false && (
+        <div
+          style={{
+            background: "linear-gradient(90deg, #8b0000 0%, #4a0000 100%)",
+            color: "#fff",
+            padding: "0.6rem 1rem",
+            fontSize: "0.85rem",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "0.75rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>Backend not running — webcam and YOLO need it.</span>
+          <span>From repo root in PowerShell:</span>
+          <code style={{ background: "rgba(0,0,0,0.4)", padding: "0.25rem 0.5rem", borderRadius: 4 }}>
+            .\run_drone_full.ps1
+          </code>
+          <span style={{ opacity: 0.85 }}>Then refresh this page.</span>
+        </div>
+      )}
       <div className="status-bar">
         <span className="pose">{poseLabel}</span>
         <span className={`status ${
@@ -341,7 +403,7 @@ export function ManualPage() {
           {aiStatus === "connecting" && "CONNECTING..."}
           {aiStatus === "live" && `LIVE · ${detections.length} objects`}
           {aiStatus === "waiting" && "WAITING FOR CAMERA..."}
-          {aiStatus === "error" && "AI ERROR"}
+          {aiStatus === "error" && "AI ERROR — is backend running on 8000? Click STOP AI then START AI."}
         </span>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", cursor: "pointer" }}>
@@ -360,12 +422,23 @@ export function ManualPage() {
           )}
         </div>
       </div>
+      {backendReachable === true && aiStatus === "idle" && (
+        <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "rgba(255,255,255,0.7)" }}>
+          Click <strong>START AI</strong> to turn on the webcam feed and live YOLO object detection.
+        </p>
+      )}
 
       <div className="viewport-card" style={{ position: "relative" }}>
-        {/* Camera feed: backend /api/feed or iPhone stream */}
+        {/* Camera feed: backend /api/feed or iPhone stream; placeholder when backend down to avoid ERR_CONNECTION_REFUSED */}
         <img
           ref={imgRef}
-          src={USE_BACKEND_FEED ? `${MAIN_BACKEND}/api/feed/Drone-1/processed?t=${feedTick}` : IPHONE_STREAM_URL}
+          src={
+            USE_BACKEND_FEED && backendReachable === true
+              ? `${MAIN_BACKEND}/api/feed/Drone-1/processed?t=${feedTick}`
+              : USE_BACKEND_FEED && (backendReachable === false || backendReachable === null)
+                ? BACKEND_DOWN_PLACEHOLDER
+                : IPHONE_STREAM_URL
+          }
           alt="Camera Feed"
           style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#000" }}
           onLoad={() => {
@@ -394,11 +467,16 @@ export function ManualPage() {
             </span>
             {tacticalStatus?.yolo_error ? (
               <span style={{ color: "#ff6666" }} title={tacticalStatus.yolo_error}>
-                YOLO: Error (pip install ultralytics?)
+                YOLO: Error — run: py -m pip install ultralytics
               </span>
             ) : (
               <span style={{ color: (tacticalStatus?.yolo_loaded ?? tacticalStatus?.yolo_latency_ms != null) ? "#00ff66" : "rgba(255,255,255,0.6)" }}>
                 YOLO: {tacticalStatus?.yolo_latency_ms != null ? `Running (${Math.round(tacticalStatus.yolo_latency_ms)}ms)` : "—"}
+              </span>
+            )}
+            {backendReachable === true && !tacticalStatus?.camera_ready && (
+              <span style={{ color: "rgba(255,255,255,0.7)", fontWeight: 400, fontSize: "0.65rem" }}>
+                Check backend window: it should say &quot;Camera: laptop webcam&quot;. If it says &quot;no device opened&quot;, allow camera access in Windows Settings.
               </span>
             )}
           </div>

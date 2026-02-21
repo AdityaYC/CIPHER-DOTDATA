@@ -60,7 +60,7 @@ try:
 except Exception as e:
     print(f"Drone2 backend not loaded (run from repo root with backend on path): {e}")
 
-app = FastAPI(title="Drone Vision — with Drone2 tactical features")
+app = FastAPI(title="Cipher — tactical AI backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -643,7 +643,10 @@ async def _world_graph_ingest_loop():
 async def startup_event():
     """Load data on startup. Always try laptop webcam first (as in original Drone setup)."""
     global phantom_camera_manager, phantom_yolo_detector, _simple_capture, _placeholder_jpeg
-    image_db.load()
+    try:
+        image_db.load()
+    except Exception as e:
+        print(f"  Image DB: skip ({e})")
 
     # Placeholder image so /api/feed never 503-flickers before first frame
     try:
@@ -655,19 +658,38 @@ async def startup_event():
     except Exception:
         pass
 
-    # 1) Laptop webcam first (same as Drone/Drone2: camera index 0)
+    # 1) Laptop webcam: try index 0, 1; on Windows try DSHOW then MSMF
     try:
         import cv2
-        _simple_capture = cv2.VideoCapture(0)
-        if _simple_capture.isOpened():
-            asyncio.create_task(_simple_camera_loop())
-            phantom_state["feeds"]["Drone-1"] = True
-            phantom_state["feeds"]["Drone-2"] = True
-            print("  Camera: laptop webcam (index 0)")
-        else:
-            _simple_capture.release()
-            _simple_capture = None
-            print("  Camera: failed to open index 0")
+        def _open_cam(idx, api=cv2.CAP_ANY):
+            cap = cv2.VideoCapture(idx, api) if api != cv2.CAP_ANY else cv2.VideoCapture(idx)
+            if cap.isOpened():
+                # Warmup: some webcams need a few reads before giving valid frames
+                for _ in range(5):
+                    cap.read()
+                return cap
+            return None
+        for idx in [0, 1]:
+            cap = _open_cam(idx)
+            if cap is not None:
+                _simple_capture = cap
+                asyncio.create_task(_simple_camera_loop())
+                phantom_state["feeds"]["Drone-1"] = True
+                phantom_state["feeds"]["Drone-2"] = True
+                print(f"  Camera: laptop webcam (index {idx})")
+                break
+        if _simple_capture is None and os.name == "nt":
+            for api, name in [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF")]:
+                cap = _open_cam(0, api)
+                if cap is not None:
+                    _simple_capture = cap
+                    asyncio.create_task(_simple_camera_loop())
+                    phantom_state["feeds"]["Drone-1"] = True
+                    phantom_state["feeds"]["Drone-2"] = True
+                    print(f"  Camera: laptop webcam (index 0, {name})")
+                    break
+        if _simple_capture is None:
+            print("  Camera: no device opened (tried 0, 1, DSHOW, MSMF). Grant app camera access or close other apps using the webcam.")
     except Exception as e:
         print(f"  Camera: {e}")
 
@@ -709,6 +731,11 @@ async def startup_event():
             print(f"  Agent (vector DB): loaded {n} manual chunks")
     except Exception as e:
         print(f"  Agent (vector DB): skip ({e})")
+
+    # Summary so you can see why webcam/YOLO might not show
+    cam_ok = _simple_capture is not None and _simple_capture.isOpened()
+    yolo_ok = phantom_yolo_detector is not None or getattr(models, "yolo", None) is not None
+    print(f"  >>> Backend ready. Webcam: {'OK' if cam_ok else 'NOT OPEN'}. YOLO: {'OK' if yolo_ok else 'NOT LOADED (pip install ultralytics?)'}")
 
 
 @app.get("/getImage")
@@ -846,7 +873,11 @@ def api_status():
         _simple_camera_jpeg is not None
         or (phantom_camera_manager is not None and _phantom is not None)
     )
-    yolo_loaded = phantom_yolo_detector is not None
+    # YOLO is loaded if Drone2 ONNX detector or Drone CPU fallback (models.yolo) is used
+    yolo_loaded = (
+        phantom_yolo_detector is not None
+        or getattr(models, "yolo", None) is not None
+    )
     yolo_error = phantom_state.get("yolo_error")
     return {
         "feeds": phantom_state.get("feeds", {}),
@@ -860,7 +891,8 @@ def api_status():
 
 @app.get("/api/detections")
 def api_detections():
-    return phantom_state.get("detections", {}) if _phantom else {}
+    # Return detections from either Drone2 YOLO or Drone CPU fallback (_simple_yolo_loop)
+    return phantom_state.get("detections", {})
 
 
 @app.get("/api/advisory")
@@ -894,10 +926,10 @@ def api_feed(drone_id: str):
 
 @app.get("/api/feed/{drone_id}/processed")
 def api_feed_processed(drone_id: str):
-    if phantom_camera_manager is not None and _phantom is not None:
-        jpeg = phantom_state.get("processed_frames", {}).get(drone_id)
-        if jpeg:
-            return Response(content=jpeg, media_type="image/jpeg")
+    # Prefer YOLO-overlay frame (from phantom_background_loop or _simple_yolo_loop)
+    jpeg = phantom_state.get("processed_frames", {}).get(drone_id)
+    if jpeg:
+        return Response(content=jpeg, media_type="image/jpeg")
     if _simple_camera_jpeg is not None:
         return Response(content=_simple_camera_jpeg, media_type="image/jpeg")
     # Avoid 503 flicker: serve placeholder until first frame is ready
@@ -1049,7 +1081,7 @@ async def analyze_frame(request: AnalyzeRequest):
 
 @app.get("/live_detections")
 async def live_detections(run_llama: bool = False):
-    """SSE stream: iPhone stream if available; else Drone2 laptop camera + YOLO + advisory."""
+    """SSE stream: iPhone stream if available; else laptop camera + YOLO + advisory."""
     import httpx
 
     IPHONE_STREAM = "http://localhost:8002/latest_frame"
@@ -1058,11 +1090,17 @@ async def live_detections(run_llama: bool = False):
     async def event_stream():
         last_frame_time = None
         frame_counter = 0
+        # Send first event immediately so client gets 200 and doesn't trigger EventSource onerror
+        try:
+            yield f"data: {json.dumps({'type': 'waiting', 'message': 'Starting camera feed...'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'waiting', 'message': str(e)})}\n\n"
         # Use laptop state whenever feeds are active (from _simple_yolo_loop or phantom_background_loop)
         has_laptop_feed = bool(
-            phantom_state.get("feeds", {}).get("Drone-1") or phantom_state.get("feeds", {}).get("Drone-2")
+            phantom_state.get("feeds", {}).get("Drone-1")
+            or phantom_state.get("feeds", {}).get("Drone-2")
+            or (_simple_capture is not None and _simple_capture.isOpened())
         )
-
         while True:
             try:
                 # 1) Try iPhone stream first
@@ -1135,7 +1173,8 @@ async def live_detections(run_llama: bool = False):
                 yield f"data: {json.dumps({'type': 'waiting', 'message': 'No camera feed yet'})}\n\n"
                 await asyncio.sleep(1.0)
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                # Always send "waiting" so UI shows WAITING FOR CAMERA... not AI ERROR (webcam/yolo often need a few seconds)
+                yield f"data: {json.dumps({'type': 'waiting', 'message': str(e)})}\n\n"
                 await asyncio.sleep(1.0)
 
     return StreamingResponse(
@@ -1155,7 +1194,7 @@ def serve_root():
     if index_path.is_file():
         return FileResponse(index_path)
     return Response(
-        content="<html><body><h1>Drone Vision</h1><p>API is running. Build the UI: <code>cd Drone/frontend && npm run build</code></p><p><a href='/health'>/health</a></p></body></html>",
+        content="<html><body><h1>Cipher</h1><p>API is running. Build the UI: <code>cd Drone/frontend && npm run build</code></p><p>Or run <code>run_drone_full.ps1</code> and open http://localhost:5173</p><p><a href='/health'>/health</a></p></body></html>",
         media_type="text/html",
     )
 

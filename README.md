@@ -1,162 +1,104 @@
-# PHANTOM CODE — On-Device AI Tactical Drone Copilot
+# Cipher
 
-A tactical AI copilot for drone operators that runs entirely on a single Qualcomm Snapdragon X Elite laptop with **zero cloud dependency**. Phones act as drone cameras; the laptop runs YOLOv8 on the NPU for real-time object detection and a local LLM (Ollama + Phi-3 Mini) for actionable tactical advice.
-
-**This is NOT autonomous drone control. This is an AI advisor that tells a human operator what to do.**
+On-device AI tactical system: live webcam, YOLO object detection, tactical map, and agent exploration. Runs on a single laptop with **zero cloud dependency**.
 
 ---
 
-## Quick Start (copy-paste commands)
+## How to start
 
-From the **repo root** (the folder that contains `backend/`, `frontend/`, `scripts/`):
-
-```bash
-# 1. Create a virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# 2. Install dependencies
-pip install -r backend/requirements.txt
-
-# 3. Download the YOLO model (first time only)
-# Option A — Qualcomm AI Hub (v8 detection, NPU-optimized):
-python scripts/download_model_qualcomm.py
-# Option B — Ultralytics only (CPU ONNX):
-# python scripts/download_model.py
-
-# 4. Run the server (HTTP — works in browser without cert warnings)
-PHANTOM_HTTP_ONLY=1 python backend/main.py
-```
-
-Then open in your browser:
-
-- **Drone UI (landing, manual, agent, replay, tactical):** http://localhost:8000 (after building the Drone frontend — see below)
-- **Legacy tactical map:** http://localhost:8000/phantom  
-- **Live stream (camera + YOLO):** http://localhost:8000/live  
-
-**Drone React UI:** To use the Drone folder’s UI as the default, build it once: `cd Drone/frontend && npm install && npm run build`. Then restart the server; `/` will serve the Drone app. It includes **Live Tactical** (Drone2 features: map, advisory, mission selector, dual feeds).
-
-**One-liner after setup:** from repo root, run `./run.sh` (or `PHANTOM_HTTP_ONLY=1 python backend/main.py`).
-
----
-
-## Run Drone (main app) with Drone2 features
-
-**Drone** is the main UI (landing, Manual Control, Agent, Replay). It includes **Drone2 features**: laptop webcam, YOLO detections, tactical advisory, mission selector, and status in the Manual tab.
-
-From repo root (Windows PowerShell):
+**Windows (PowerShell) — from the repo root:**
 
 ```powershell
 .\run_drone_full.ps1
 ```
 
-- Backend starts in a new window (port 8000).  
-- Frontend starts in this terminal (port 5173).  
-- **Open http://localhost:5173** in your browser.
+- A **backend** window opens (port 8000).
+- This terminal starts the **Cipher frontend** (Vite). If port 5173 is in use, Vite may use 5174 or 5175 — check the terminal for the URL.
+- **Open in your browser** the URL shown (e.g. **http://localhost:5173** or **http://localhost:5174**).
+- Go to **Manual** → click **START AI** for live webcam and YOLO detections.
 
-Manual Control shows the laptop camera, YOLO detections, and the Tactical panel (advisory, mission, status). Ensure Node is installed and on PATH (or run `$env:Path = "${env:ProgramFiles}\nodejs;$env:Path"` first).
+**If you see “Backend not running” or connection errors:**
 
----
+1. Make sure the **backend window** is open and shows no Python errors.
+2. Or start only the backend in a separate terminal:
+   ```powershell
+   .\start_backend.ps1
+   ```
+3. Refresh the Manual page.
 
-## Verify it works (after clone or pull)
-
-Run these from the **repo root** to confirm everything works:
-
-```bash
-# Clone (if starting fresh)
-git clone https://github.com/Adi0224/Drone2.git
-cd Drone2
-
-# Setup
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r backend/requirements.txt
-python scripts/download_model.py   # first time only (~12 MB)
-
-# Run
-PHANTOM_HTTP_ONLY=1 python backend/main.py
-```
-
-You should see: `Starting server on http://localhost:8000`. Then:
-
-1. Open **http://localhost:8000** — tactical map and webcam feed should load.
-2. Open **http://localhost:8000/live** — live stream with YOLO boxes.
-
-If both load, the app is working. Stop the server with `Ctrl+C`.
+**Requirements:** Python 3.12 (or 3.10+), Node.js (for the frontend). Install YOLO once: `py -m pip install ultralytics`.
 
 ---
 
-## Quick Start (Mac — with built-in webcam)
+## First-time setup (after clone)
 
-On Mac the app uses your **built-in webcam** by default. YOLO runs on CPU.
+From the **repo root**:
 
-```bash
-pip install -r backend/requirements.txt
-python scripts/download_model.py    # first time only
-PHANTOM_HTTP_ONLY=1 python backend/main.py
+```powershell
+# Optional: create venv
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# Backend deps
+pip install -r Drone\local_backend\requirements.txt
+py -m pip install ultralytics
+
+# Frontend deps (once)
+cd Drone\frontend
+npm install
+cd ../..
 ```
 
-Open **http://localhost:8000** — you’ll see the tactical map, webcam in both sectors, and real-time detections.
+Then run `.\run_drone_full.ps1` as above.
 
 ---
 
-## Quick Start (use your phone as camera)
+## What’s in the app
 
-**Option A — IP Webcam app (works on iPhone and Android)**  
-1. Install **IP Webcam** on your phone and start the server.  
-2. Note the URL (e.g. `http://192.168.1.5:8080`).  
-3. On the **laptop**, open http://localhost:8000/live and paste that URL in the “Use your phone camera” box → **Connect phone camera**.
+| Page    | Description |
+|---------|-------------|
+| **Landing** | Cipher home; link to launch. |
+| **Manual**  | Live webcam, YOLO boxes, tactical map, mission selector. Click **START AI** to enable feed and detections. |
+| **Agent**   | Tactical query and agent exploration. |
+| **Replay**  | Trajectory replay. |
 
-**Option B — iPhone camera in Safari (no app)**  
-Safari needs HTTPS. Generate certs once, then run without `PHANTOM_HTTP_ONLY`:
-
-```bash
-./scripts/generate_ssl_certs.sh     # first time only
-python backend/main.py              # uses HTTPS
-```
-
-On your iPhone (same Wi‑Fi), open **https://YOUR_MAC_IP:8000/phone**. Tap **Advanced** → **Continue** for the certificate, then **Turn on camera**.  
-*(To use the app on the laptop with HTTPS, open https://localhost:8000 and accept the cert.)*
+Backend serves the API (camera, YOLO, status, detections) on **http://localhost:8000**. The Cipher UI runs on the port Vite prints (usually 5173).
 
 ---
 
 ## Project layout
 
-| Path        | Description                                      |
-|------------|---------------------------------------------------|
-| `backend/` | FastAPI server, camera manager, YOLO, LLM advisory |
-| `frontend/`| Tactical map and live stream UI (HTML/CSS/JS)      |
-| `models/`  | Put `yolov8_det.onnx` here (run `download_model_qualcomm.py` or `download_model.py`) |
-| `scripts/` | `download_model_qualcomm.py` (Qualcomm Hub v8 det), `download_model.py`, `generate_ssl_certs.sh` |
-| `run.sh`   | Run the app (installs deps and model if needed)   |
+| Path                 | Description |
+|----------------------|-------------|
+| `Drone/frontend`     | Cipher React UI (Vite). |
+| `Drone/local_backend`| Backend used by `run_drone_full.ps1` (FastAPI, webcam, YOLO). |
+| `backend/`           | Optional alternate backend (root). |
+| `run_drone_full.ps1` | Start backend + Cipher frontend. |
+| `start_backend.ps1`  | Start only the backend (when frontend is already running). |
 
 ---
 
-## Commands reference
+## Commands
 
-| What              | Command |
-|-------------------|--------|
-| Install deps      | `pip install -r backend/requirements.txt` |
-| Download YOLO (Qualcomm Hub v8) | `python scripts/download_model_qualcomm.py` |
-| Download YOLO (Ultralytics)     | `python scripts/download_model.py` |
-| Run (HTTP, no SSL)| `PHANTOM_HTTP_ONLY=1 python backend/main.py` |
-| Run (with HTTPS)  | `python backend/main.py` (after `./scripts/generate_ssl_certs.sh`) |
-| Run via script    | `./run.sh` |
+| Action        | Command |
+|---------------|--------|
+| Run app       | `.\run_drone_full.ps1` |
+| Backend only  | `.\start_backend.ps1` |
+| Install YOLO  | `py -m pip install ultralytics` |
+| Backend deps  | `pip install -r Drone\local_backend\requirements.txt` |
 
 ---
 
-## API
+## API (backend)
 
-- `GET /api/status` — Feed status, NPU provider, YOLO latency  
-- `GET /api/detections` — Mapped detections per drone  
-- `GET /api/advisory` — Latest LLM advice and mission  
-- `POST /api/mission` — Set mission (e.g. `{"mission": "perimeter"}`)  
-- `GET /api/feed/{drone_id}` — Raw frame; `GET /api/feed/{drone_id}/processed` — frame with YOLO boxes  
+- `GET /health` — Backend health.
+- `GET /api/status` — Feed status, YOLO latency.
+- `GET /api/feed/{drone_id}/processed` — Live frame with YOLO overlay.
+- `GET /live_detections` — SSE stream of detections (used when you click START AI).
 
 ---
 
 ## Requirements
 
-- **Mac:** Built-in webcam, CPU inference. Optional: Ollama + `phi3:mini` for LLM advice.  
-- **Windows (Qualcomm):** Windows 11, Qualcomm AI Stack (QNN) for NPU; falls back to CPU if unavailable.  
-- Python 3.10+, FastAPI, OpenCV, ONNX Runtime, httpx, uvicorn  
+- **Windows:** Python 3.12 (or 3.10/3.11/3.13), Node.js, webcam. `ultralytics` for YOLO.
+- **Mac/Linux:** Same; built-in webcam and CPU inference supported.
