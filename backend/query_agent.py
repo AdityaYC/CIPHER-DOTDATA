@@ -8,7 +8,7 @@ Use llama3.2 (3B) for fast answers; llama3.1 (8B) for higher quality.
 """
 
 import logging
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 
 try:
     from .vector_db import query as vector_query
@@ -77,31 +77,69 @@ def _format_manual_fallback(
     return "\n".join(lines).strip()
 
 
-def _keyword_fallback(question: str, get_graph_callback: Optional[Callable]) -> str:
-    """Fast fallback: search graph nodes by keyword if no Genie. Never crashes."""
-    if get_graph_callback:
-        try:
-            data = get_graph_callback()
-            nodes = data.get("nodes", []) if isinstance(data, dict) else []
-            q = question.lower()
-            out = []
-            for node in nodes[:5]:
-                node_id = node.get("node_id", "")
-                dets = node.get("detections", [])
-                for d in dets:
-                    cls = (d.get("class_name") or d.get("class", "")).lower()
-                    if cls in q or q in cls or ("survivor" in q and cls == "person"):
-                        out.append(f"Node {node_id}: {cls} detected.")
-            if out:
-                return " ".join(out[:3])
-            return "No matching nodes in current map. Try refining your question or wait for more detections."
-        except Exception:
-            pass
-    return (
+def _keyword_fallback_result(question: str, get_graph_callback: Optional[Callable]) -> Tuple[str, List[str]]:
+    """Search all graph nodes by detection class; return (answer, node_ids) for highlight. Never crashes."""
+    no_llm_msg = (
         "No on-device LLM is available. For agentic answers: (1) Install Ollama and run 'ollama run llama3.2', then restart the backend; "
         "or (2) set up the Genie bundle (genie_bundle/) in the project root. "
         "You can still get answers from manuals by adding .txt files to the data/ folder."
     )
+    if not get_graph_callback:
+        return (no_llm_msg, [])
+    try:
+        data = get_graph_callback()
+        nodes = data.get("nodes", []) if isinstance(data, dict) else []
+        if not nodes:
+            return ("No nodes in the map yet. Add video or run Manual with START AI to build the graph, then ask again.", [])
+        q = question.lower()
+        words = [w for w in q.replace("?", "").replace(".", "").split() if len(w) > 1]
+        matching_nodes: List[tuple] = []  # (node_id, class_name, confidence)
+        for node in nodes:
+            node_id = node.get("node_id", "")
+            dets = node.get("detections", [])
+            for d in dets:
+                cls = (d.get("class_name") or d.get("class", "")).lower()
+                conf = d.get("confidence", 0) or 0
+                matched = (
+                    cls in q or q in cls
+                    or any(w in cls or cls in w for w in words)
+                    or ("survivor" in q and cls == "person")
+                    or ("exit" in q and "door" in cls)
+                )
+                if matched:
+                    matching_nodes.append((node_id, cls, conf))
+                    break
+        if matching_nodes:
+            seen = set()
+            unique = []
+            for nid, cls, conf in matching_nodes:
+                if nid not in seen:
+                    seen.add(nid)
+                    unique.append((nid, cls, conf))
+            node_ids_out = [n[0] for n in unique]
+            node_list = ", ".join(node_ids_out[:10])
+            if len(unique) > 10:
+                node_list += f" (and {len(unique) - 10} more)"
+            count = len(unique)
+            obj = unique[0][1] if unique else "object"
+            answer = (
+                f"The {obj} was seen at {count} node(s) / frame(s): {node_list}. "
+                "You can jump to these in the map to view the images."
+            )
+            return (answer, node_ids_out)
+        return (
+            "No matching detections in the current map. Try another object (e.g. person, bottle, chair) or add more video with START AI / import.",
+            [],
+        )
+    except Exception:
+        pass
+    return (no_llm_msg, [])
+
+
+def _keyword_fallback(question: str, get_graph_callback: Optional[Callable]) -> str:
+    """Wrapper for backward compatibility; returns only the answer string."""
+    answer, _ = _keyword_fallback_result(question, get_graph_callback)
+    return answer
 
 
 def query_agent(
@@ -158,5 +196,5 @@ def query_agent(
         )
         if answer:
             return {"answer": answer.strip(), "node_ids": node_ids, "confidence": 0.6, "recommended_action": ""}
-    answer = _keyword_fallback(question, get_graph_callback)
-    return {"answer": answer, "node_ids": node_ids, "confidence": 0.5, "recommended_action": ""}
+    answer, fallback_node_ids = _keyword_fallback_result(question, get_graph_callback)
+    return {"answer": answer, "node_ids": fallback_node_ids or node_ids, "confidence": 0.5, "recommended_action": ""}

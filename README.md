@@ -55,11 +55,30 @@ Frontend runs at **http://localhost:5173** (or 5174 if 5173 is in use). Open tha
 
 From the **repo root** in PowerShell:
 
-```powershell
-# Install all dependencies (backend + frontend) — project creator's method
-.\scripts\install_deps.ps1
+**Option A — One-shot (recommended): install deps, YOLO, and depth model**
 
-# Frontend: Node deps (once)
+```powershell
+.\scripts\setup_yolo_and_depth.ps1
+```
+
+Then install the frontend once:
+
+```powershell
+cd Drone\frontend
+npm install
+cd ../..
+```
+
+**Option B — Step by step**
+
+```powershell
+# Backend: Python deps (use your Python 3.12 path or py -3.12)
+.\scripts\install_deps.ps1
+# YOLO model (downloads yolov8n.pt / ONNX)
+.\scripts\download_model.ps1
+# Optional: depth model for minimap (caches Depth-Anything-V2)
+py -3.12 scripts\download_depth_model.py
+# Frontend (once)
 cd Drone\frontend
 npm install
 cd ../..

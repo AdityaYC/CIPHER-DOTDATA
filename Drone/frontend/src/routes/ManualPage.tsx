@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { IPHONE_STREAM_URL, API_BASE_URL, BACKEND_FEED_BASE } from "../config";
-import { fetchTacticalStatus, type TacticalStatus } from "../api/tactical";
+import { fetchTacticalStatus, fetchTacticalDetections, type TacticalStatus, type TacticalDetections } from "../api/tactical";
 
 const MAIN_BACKEND = API_BASE_URL || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 const USE_BACKEND_FEED = BACKEND_FEED_BASE !== undefined && BACKEND_FEED_BASE !== null;
@@ -11,15 +11,24 @@ const BACKEND_DOWN_PLACEHOLDER =
     '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><rect fill="#0a0f19" width="640" height="480"/><text x="320" y="220" fill="rgba(255,255,255,0.9)" font-family="sans-serif" font-size="18" text-anchor="middle">Backend not running on port 8000</text><text x="320" y="260" fill="rgba(255,255,255,0.6)" font-family="sans-serif" font-size="14" text-anchor="middle">Start it from repo root:</text><text x="320" y="295" fill="#00ff66" font-family="monospace" font-size="13" text-anchor="middle">.\\run_drone_full.ps1</text><text x="320" y="330" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-size="12" text-anchor="middle">(or open a terminal and run the backend, then refresh)</text></svg>'
   );
 
-// Overhead map: world graph nodes. Colors by category
-const MAP_NODE_COLORS: Record<string, string> = {
-  survivor: "#00ff66",
-  hazard: "#ff3333",
-  structural: "#ff8800",
-  exit: "#3388ff",
-  clear: "#888888",
-  unknown: "#888888",
+// Semantic map: detection class colors (same as tactical)
+const SEMANTIC_CLASS_COLORS: Record<string, string> = {
+  person: "#00ff66",
+  bicycle: "#4488ff",
+  car: "#4488ff",
+  motorcycle: "#4488ff",
+  bus: "#4488ff",
+  truck: "#4488ff",
+  default: "#888888",
 };
+function getSemanticClassColor(className: string): string {
+  return SEMANTIC_CLASS_COLORS[className] ?? SEMANTIC_CLASS_COLORS.default;
+}
+
+// Backend Drone-1 zone (map_x, map_y range) — we scale to semantic map canvas
+const ZONE_DRONE1 = { x_min: 50, y_min: 50, x_max: 370, y_max: 550 };
+const SEMANTIC_MAP_W = 320;
+const SEMANTIC_MAP_H = 200;
 
 interface Detection {
   class: string;
@@ -28,35 +37,28 @@ interface Detection {
   distance_meters?: number | null;
 }
 
-type GraphNode = { node_id: string; pose: [number, number, number] | null; detections?: Array<{ class_name: string; confidence: number; category?: string }> };
-
 export function ManualPage() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [aiStatus, setAiStatus] = useState<"idle" | "connecting" | "live" | "waiting" | "error">("idle");
   const imgRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sseRef = useRef<EventSource | null>(null);
-  const mapCanvasRef = useRef<HTMLCanvasElement>(null);
-  const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; path: Array<{ x: number; y: number; z: number }>; stats?: { node_count: number; area_m2: number } } | null>(null);
+  const semanticMapRef = useRef<HTMLCanvasElement>(null);
+  const [tacticalDetections, setTacticalDetections] = useState<TacticalDetections | null>(null);
+  const semanticPulseRef = useRef<Record<string, number>>({});
+  const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
 
-  const fetchGraph3d = useCallback(async () => {
-    try {
-      const r = await fetch(`${MAIN_BACKEND}/api/graph_3d`);
-      if (!r.ok) return;
-      const data = await r.json();
-      setGraphData({ nodes: data.nodes ?? [], path: data.path ?? [], stats: data.stats });
-    } catch {
-      setGraphData(null);
-    }
-  }, [MAIN_BACKEND]);
+  // Poll tactical detections for semantic map (map_x, map_y)
   useEffect(() => {
-    fetchGraph3d();
-    const t = setInterval(fetchGraph3d, 2000);
+    if (backendReachable !== true) return;
+    const t = setInterval(async () => {
+      const d = await fetchTacticalDetections();
+      if (d) setTacticalDetections(d);
+    }, 500);
     return () => clearInterval(t);
-  }, [fetchGraph3d]);
+  }, [backendReachable]);
 
   // Backend reachable: when false, show placeholder and don't hammer 8000 (fixes ERR_CONNECTION_REFUSED spam)
-  const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
   useEffect(() => {
     if (!USE_BACKEND_FEED || !MAIN_BACKEND) {
       setBackendReachable(true);
@@ -189,65 +191,51 @@ export function ManualPage() {
 
   useEffect(() => () => { sseRef.current?.close(); }, []);
 
-  // Overhead tactical map: world graph nodes as colored dots, path as white line, current as pulsing white
+  // Semantic map: camera zone + detections at map_x, map_y (scaled from backend zone to canvas)
   useEffect(() => {
-    const canvas = mapCanvasRef.current;
-    if (!canvas || !graphData?.nodes?.length) return;
+    const canvas = semanticMapRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const W = canvas.width = 320;
-    const H = canvas.height = 200;
+    const W = (canvas.width = SEMANTIC_MAP_W);
+    const H = (canvas.height = SEMANTIC_MAP_H);
     ctx.fillStyle = "#0a0f19";
     ctx.fillRect(0, 0, W, H);
-    const path = graphData.path || [];
-    const nodes = graphData.nodes;
-    const xs = path.length ? path.map((p) => p.x) : nodes.map((n) => n.pose?.[0] ?? 0).filter((v) => typeof v === "number");
-    const ys = path.length ? path.map((p) => p.y) : nodes.map((n) => n.pose?.[1] ?? 0).filter((v) => typeof v === "number");
-    const minX = Math.min(...xs, 0);
-    const maxX = Math.max(...xs, 0);
-    const minY = Math.min(...ys, 0);
-    const maxY = Math.max(...ys, 0);
-    const pad = 20;
-    const rangeX = maxX - minX || 1;
-    const rangeY = maxY - minY || 1;
-    const scale = Math.min((W - pad * 2) / rangeX, (H - pad * 2) / rangeY);
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const toScreen = (x: number, y: number) => ({
-      sx: W / 2 + (x - cx) * scale,
-      sy: H / 2 - (y - cy) * scale,
+    const zone = ZONE_DRONE1;
+    const scaleX = W / (zone.x_max - zone.x_min);
+    const scaleY = H / (zone.y_max - zone.y_min);
+    const toCanvas = (map_x: number, map_y: number) => ({
+      x: (map_x - zone.x_min) * scaleX,
+      y: (map_y - zone.y_min) * scaleY,
     });
-    if (path.length >= 2) {
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1;
+    ctx.strokeStyle = "#00ff66";
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(0, 0, W, H);
+    ctx.setLineDash([]);
+    ctx.font = "10px Inter, sans-serif";
+    ctx.fillStyle = "#00ff66";
+    ctx.fillText("LIVE", 6, 12);
+    const det = tacticalDetections ?? {};
+    const list = det["Drone-1"] ?? [];
+    list.forEach((d, i) => {
+      const key = `d1-${i}-${d.map_x}-${d.map_y}`;
+      if (!(key in semanticPulseRef.current)) semanticPulseRef.current[key] = 0;
+      semanticPulseRef.current[key] += 0.08;
+      const pulse = 0.7 + 0.3 * Math.sin(semanticPulseRef.current[key]);
+      const r = 5 * pulse;
+      const { x, y } = toCanvas(d.map_x, d.map_y);
+      ctx.fillStyle = getSemanticClassColor(d.class);
       ctx.beginPath();
-      const { sx, sy } = toScreen(path[0].x, path[0].y);
-      ctx.moveTo(sx, sy);
-      for (let i = 1; i < path.length; i++) {
-        const { sx: px, sy: py } = toScreen(path[i].x, path[i].y);
-        ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-    }
-    const lastId = nodes[nodes.length - 1]?.node_id;
-    nodes.forEach((n) => {
-      const pos = n.pose;
-      if (!pos) return;
-      const { sx, sy } = toScreen(pos[0], pos[1]);
-      const cat = n.detections?.[0]?.category ?? "unknown";
-      const color = MAP_NODE_COLORS[cat] ?? MAP_NODE_COLORS.unknown;
-      const isCurrent = n.node_id === lastId;
-      ctx.fillStyle = isCurrent ? "#fff" : color;
-      ctx.beginPath();
-      ctx.arc(sx, sy, isCurrent ? 5 : 3, 0, Math.PI * 2);
+      ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
-      if (isCurrent) {
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+      ctx.strokeStyle = "#0a0f19";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "#c0c8d4";
+      ctx.fillText(`${d.class} ${(d.confidence * 100).toFixed(0)}%`, x - 14, y + r + 10);
     });
-  }, [graphData]);
+  }, [tacticalDetections]);
 
   const poseDisplay = useMemo(() => ({ x: 0, y: 0, z: 0, yaw: 0 }), []);
 
@@ -300,7 +288,7 @@ export function ManualPage() {
         </p>
       )}
 
-      {/* 65% live feed | 35% overhead map */}
+      {/* 65% live feed | 35% semantic map */}
       <div style={{ display: "flex", flex: 1, minHeight: 0, gap: "0.5rem", padding: "0.5rem 0" }}>
         {/* Left 65%: live feed + overlays */}
         <div className="manual-viewport-wrap" style={{ flex: "0 0 65%", minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -366,22 +354,22 @@ export function ManualPage() {
           </div>
         </div>
 
-        {/* Right 35%: overhead tactical map + node count, area, detection summary */}
+        {/* Right 35%: semantic map (detections in camera view) + detection list */}
         <div style={{ flex: "0 0 35%", minWidth: 0, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          <span className="ai-panel-label">OVERHEAD MAP</span>
+          <span className="ai-panel-label">SEMANTIC MAP</span>
           <div style={{ flex: 1, minHeight: 120, background: "#0a0f19", borderRadius: 4, border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
             <canvas
-              ref={mapCanvasRef}
-              width={320}
-              height={200}
+              ref={semanticMapRef}
+              width={SEMANTIC_MAP_W}
+              height={SEMANTIC_MAP_H}
               style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
             />
           </div>
           <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.8)", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-            <span>Nodes: {graphData?.stats?.node_count ?? graphData?.nodes?.length ?? 0}</span>
-            <span>Area: {(graphData?.stats?.area_m2 ?? 0).toFixed(1)} m²</span>
-            {detections.length > 0 && (
+            {detections.length > 0 ? (
               <span>Detections: {detections.map((d) => d.class).join(", ") || "—"}</span>
+            ) : (
+              <span>Objects appear here when YOLO detects them</span>
             )}
           </div>
         </div>

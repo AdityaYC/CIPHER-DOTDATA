@@ -50,6 +50,11 @@ Write-Host "Installing backend requirements..."
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
+Write-Host "Installing ultralytics (YOLO)..."
+& $python -m pip install ultralytics -q
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host ""
 Write-Host "Done. To run the app use the same Python:"
 Write-Host "  & `"$python`" -m uvicorn Drone.local_backend.app:app --host 0.0.0.0 --port 8000"
 Write-Host "Or add Python to PATH (see README or run add_python_to_path.ps1)."

@@ -339,11 +339,12 @@ class ModelManager:
             os.unlink(tmp_path)
     
     def detect_objects(self, image: Image.Image) -> List[Dict]:
-        """Run YOLO object detection (conf=0.2 to get more detections)."""
+        """Run YOLO object detection (conf=0.15 to get more detections)."""
         self.load_yolo()
         if self.yolo is None:
             return []
-        results = self.yolo(image, conf=0.2, verbose=False)
+        # conf=0.15 so person/objects are detected more readily
+        results = self.yolo(image, conf=0.15, verbose=False)
         detections = []
         for r in results:
             for box in r.boxes:
@@ -1324,44 +1325,62 @@ async def _run_voice_query_with_text(text: str):
         _spec.loader.exec_module(_mod)
         query_agent = _mod.query_agent
 
+    # Sync graph to vector DB so "bottle"/object questions can use semantic search when no spatial match
+    if _world_graph is not None:
+        try:
+            if str(_DRONE2_ROOT) not in sys.path:
+                sys.path.insert(0, str(_DRONE2_ROOT))
+            from backend.vector_db import sync_graph_nodes
+            sync_graph_nodes(_world_graph.get_graph)
+        except Exception:
+            pass
+
     spatial_answer = ""
     spatial_node_ids = []
     wg = _get_world_graph()
-    if wg is not None and getattr(wg, "nodes", None) and len(wg.nodes) >= 3:
+    # Run detection-based search for any object-style question when we have at least one node with frames
+    if wg is not None and getattr(wg, "nodes", None) and len(wg.nodes) >= 1:
+        nodes_with_frames = sum(1 for n in wg.nodes.values() if getattr(n, "image_b64", None))
         q = text.lower()
-        spatial_triggers = ("where", "find", "locate", "show me", "in the feed", "spot", "which node", "which frame", "see the", "saw the", "was the", "extinguisher", "person", "exit", "door", "fire", "hazard")
-        if any(t in q for t in spatial_triggers):
-            nodes_with_frames = sum(1 for n in wg.nodes.values() if getattr(n, "image_b64", None))
-            if nodes_with_frames >= 2:
-                def _spatial_search():
-                    try:
-                        from clip_navigator import (
-                            find_best_node,
-                            find_top_k_nodes,
-                            describe_node,
-                            find_nodes_by_detection_class,
-                        )
-                        # 1) Prefer nodes where YOLO detections match the query (Manual/import frames)
-                        by_det = find_nodes_by_detection_class(text, wg)
-                        if by_det:
-                            best_id = by_det[0][0]
-                            top_ids = [nid for nid, _ in by_det[:3]]
-                            desc = describe_node(best_id, wg)
-                            return best_id, top_ids, desc
-                        # 2) Fall back to CLIP visual similarity
-                        best = find_best_node(text, wg)
-                        if best:
-                            top3 = find_top_k_nodes(text, wg, k=3)
-                            desc = describe_node(best, wg)
-                            return best, top3, desc
-                    except Exception:
-                        return None, [], ""
+        spatial_triggers = (
+            "where", "find", "locate", "show me", "in the feed", "spot", "which node", "which nodes",
+            "which frame", "which frames", "which image", "which images", "which instance", "which instances",
+            "see the", "saw the", "was the", "seen", "detected", "extinguisher", "person", "exit", "door",
+            "fire", "hazard", "bottle", "cup", "chair", "table", "object", "cell phone", "book", "laptop",
+        )
+        if nodes_with_frames >= 1 and (any(t in q for t in spatial_triggers) or any(w in q for w in ("node", "frame", "image", "instance"))):
+            def _spatial_search():
+                try:
+                    from clip_navigator import (
+                        find_best_node,
+                        find_top_k_nodes,
+                        describe_node,
+                        find_nodes_by_detection_class,
+                    )
+                    # 1) Prefer nodes where YOLO detections match the query (e.g. "bottle", "person")
+                    by_det = find_nodes_by_detection_class(text, wg)
+                    if by_det:
+                        best_id = by_det[0][0]
+                        # Return all matching nodes so UI can highlight "at which nodes was X seen"
+                        top_ids = [nid for nid, _ in by_det[:15]]
+                        desc = describe_node(best_id, wg)
+                        if len(by_det) > 1:
+                            desc = f"Found at {len(by_det)} node(s)/frame(s): {', '.join(top_ids[:8])}{'...' if len(top_ids) > 8 else ''}. {desc}"
+                        return best_id, top_ids, desc
+                    # 2) Fall back to CLIP visual similarity
+                    best = find_best_node(text, wg)
+                    if best:
+                        top3 = find_top_k_nodes(text, wg, k=3)
+                        desc = describe_node(best, wg)
+                        return best, top3, desc
+                except Exception:
                     return None, [], ""
-                loop = asyncio.get_event_loop()
-                best_id, top_ids, desc = await loop.run_in_executor(None, _spatial_search)
-                if best_id:
-                    spatial_node_ids = [best_id] + [n for n in top_ids if n != best_id][:2]
-                    spatial_answer = f"Found in the feed at this spot (see highlighted nodes below). {desc}"
+                return None, [], ""
+            loop = asyncio.get_event_loop()
+            best_id, top_ids, desc = await loop.run_in_executor(None, _spatial_search)
+            if best_id:
+                spatial_node_ids = [best_id] + [n for n in top_ids if n != best_id][:14]
+                spatial_answer = f"Found in the feed (see highlighted nodes below). {desc}"
 
     # Only run knowledge (manuals/vector DB) when we don't have a spatial match — show just the answer to what was asked
     answer = ""
@@ -1632,12 +1651,18 @@ async def live_detections(run_llama: bool = False):
                 except Exception:
                     pass
 
-                # 2) Laptop camera: use phantom_state (filled by YOLO loop)
+                # 2) Laptop camera: use phantom_state (filled by YOLO loop), or run YOLO inline if still empty
                 if has_laptop_feed:
                     raw = phantom_state.get("raw_detections", [])
-                    # Fallback: use mapped detections for Drone-1 if raw not populated (same keys + map_x, map_y)
-                    if not raw:
-                        raw = phantom_state.get("detections", {}).get("Drone-1", [])
+                    # If background loop hasn't filled detections yet (or YOLO failed there), run YOLO on current frame
+                    if not raw and _simple_camera_frame is not None:
+                        try:
+                            import cv2
+                            rgb = cv2.cvtColor(_simple_camera_frame, cv2.COLOR_BGR2RGB)
+                            image = Image.fromarray(rgb)
+                            raw = models.detect_objects(image)
+                        except Exception:
+                            pass
                     detections = [
                         {"class": d.get("class", "?"), "confidence": float(d.get("confidence", 0)), "bbox": list(d.get("bbox", [0, 0, 0, 0]))}
                         for d in raw
