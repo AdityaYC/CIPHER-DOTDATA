@@ -9,7 +9,7 @@
 **Autonomous disaster response AI. No cloud. No signal. No compromises.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![Python 3.10](https://img.shields.io/badge/Python-3.10%20x64-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12%20x64-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Qualcomm NPU](https://img.shields.io/badge/Qualcomm-Snapdragon%20X%20Elite-3253DC?style=flat-square)](https://www.qualcomm.com/)
 [![ONNX Runtime](https://img.shields.io/badge/ONNX-Runtime%20QNN-FF6F00?style=flat-square)](https://onnxruntime.ai/)
 [![YOLOv8](https://img.shields.io/badge/YOLOv8-Ultralytics-00FFAB?style=flat-square)](https://ultralytics.com/)
@@ -182,110 +182,120 @@ Two nodes are connected only when their CLIP cosine similarity satisfies:
 | RAM | 16GB minimum, 32GB recommended |
 | Storage | 10GB free (models + vector DB) |
 | Camera | USB webcam or built-in (720p minimum) |
-| OS | Windows 11 ARM |
-
-> **No Snapdragon?** Run `python main.py --demo` for full CPU fallback with pre-recorded footage.
+| OS | Windows 11 |
 
 ### Software
 | Dependency | Version |
 |------------|---------|
-| Python | **3.10 x64** (not ARM64) |
-| CUDA / NPU | Qualcomm AI Stack + QnnHtp.dll |
-| Node.js | 18+ (frontend only) |
+| Python | **3.12 x64** |
+| Node.js | 18+ |
+| PowerShell | 5.1+ (built into Windows) |
 
 ---
 
-## ⚡ Installation
+## ⚡ Quick Start
 
-### 1. Clone the repository
+> **First time setup takes ~5 minutes. Every run after that is one command.**
+
+### Step 1 — Clone the repository
 
 ```bash
 git clone https://github.com/yourusername/cipher.git
 cd cipher
 ```
 
-### 2. Create Python 3.10 x64 environment
+### Step 2 — Check Python 3.12 is installed
 
-```bash
-# Windows — ensure you are using x64 Python 3.10, NOT ARM64
-py -3.10 -m venv venv
-venv\Scripts\activate
+```powershell
+py -3.12 --version
+# Should print: Python 3.12.x
 ```
 
-### 3. Run the setup script
+> Don't have Python 3.12? Download it from [python.org](https://www.python.org/downloads/). Make sure to check **"Add to PATH"** during install.
 
-```bash
-python setup.py
+### Step 3 — Install all dependencies
+
+```powershell
+.\scripts\install_deps.ps1
+```
+
+This installs everything automatically:
+- ✅ `Drone\local_backend\requirements.txt`
+- ✅ `backend\requirements.txt`
+- ✅ `ultralytics` (YOLOv8)
+- ✅ All Python packages for both backend and drone modules
+
+> **If PowerShell says "cannot be loaded because running scripts is disabled"**, run this first:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+> Then re-run `.\scripts\install_deps.ps1`
+
+> **If install_deps.ps1 can't find Python 3.12**, point it manually:
+> ```powershell
+> $env:PYTHON312_PATH = "C:\Path\To\Python312\python.exe"
+> .\scripts\install_deps.ps1
+> ```
+
+### Step 4 — Run CIPHER
+
+```powershell
+.\run.ps1
 ```
 
 This single command:
-- ✅ Detects Qualcomm NPU and locates `QnnHtp.dll` automatically
-- ✅ Downloads and compiles YOLOv8n-det via Qualcomm AI Hub
-- ✅ Downloads and compiles DepthAnything via Qualcomm AI Hub
-- ✅ Downloads YOLOv8-crack-seg weights and exports to ONNX
-- ✅ Downloads CLIP to `./models/clip/` (local, no internet at runtime)
-- ✅ Downloads `all-MiniLM-L6-v2` to `./models/embeddings/`
-- ✅ Creates ChromaDB at `./chroma_db/`
-- ✅ Embeds emergency manuals into vector DB
-- ✅ Verifies `QNNExecutionProvider` for all models
-- ✅ Prints `CIPHER READY` or specific error if something failed
+- Starts the backend on `http://localhost:8000` (opens in a new window)
+- Starts the frontend on `http://localhost:5173` (runs in current window)
 
-### 4. (Optional) Install Genie SDK for Agent LLM
+### Step 5 — Open in browser
 
-```bash
-# Download Qualcomm Genie SDK separately from:
-# https://www.qualcomm.com/developer/software/qualcomm-ai-inference-sdk
-# Place genie-t2t-run.exe in ./genie_bundle/
-# Agent works without it using template-based fallback responses
+```
+http://localhost:5173
 ```
 
-### 5. Verify NPU setup
-
-```bash
-python verify.py
-```
-
-Expected output:
-```
-✓ QNN DLL found: C:\Qualcomm\AIStack\QAIRT\2.x.x\lib\arm64x-windows-msvc\QnnHtp.dll
-✓ YOLO session: QNNExecutionProvider
-✓ Depth session: QNNExecutionProvider  
-✓ CrackSeg session: QNNExecutionProvider
-✓ CLIP loaded: local cache
-✓ ChromaDB: 847 documents indexed
-✓ Genie SDK: genie-t2t-run.exe found
-
-CIPHER READY
-```
+That's it. CIPHER is running.
 
 ---
 
-## 🚀 Running CIPHER
+## 🚀 Every Run After Setup
 
-### Full NPU mode (Snapdragon X Elite)
+From the repo root:
 
-```bash
-python main.py
+```powershell
+.\run.ps1
 ```
 
-### Demo mode (any hardware, pre-recorded footage)
+Then open `http://localhost:5173`.
 
-```bash
-python main.py --demo
+---
+
+## 🔧 Troubleshooting
+
+**Backend only** (if frontend is already running separately):
+```powershell
+.\start_backend.ps1
 ```
 
-### Import a video into the world graph
+**Frontend only** (if backend is already running):
+```powershell
+cd Drone\frontend
+npm install
+npm run dev
+```
+Then open `http://localhost:5173`.
 
-```bash
-# Place any .mp4 in the project root then use the UI import button
-# Or from CLI:
-python main.py --import path/to/footage.mp4
+**Camera not detected:**
+```powershell
+# Try a different camera index in the UI settings
+# Default is index 0 (built-in), try 1 for USB webcam
 ```
 
-### With custom camera index
-
-```bash
-python main.py --camera 1
+**Port already in use:**
+```powershell
+# Kill whatever is on port 8000
+netstat -ano | findstr :8000
+taskkill /PID <PID> /F
+# Then re-run .\run.ps1
 ```
 
 ---
@@ -397,25 +407,19 @@ FRAME_QUEUE_MAX = 2               # bounded queue depth
 
 ### Qualcomm Snapdragon X Elite — Full NPU Mode
 
-```bash
-# Verify Python is x64, NOT ARM64
-python -c "import platform; print(platform.machine())"
-# Must print: AMD64
+When running on Snapdragon X Elite, CIPHER automatically uses the Hexagon NPU
+via `QNNExecutionProvider`. You will see confirmation in the terminal on startup:
 
-# Locate QNN DLL (setup.py does this automatically)
-# C:\Qualcomm\AIStack\QAIRT\[version]\lib\arm64x-windows-msvc\QnnHtp.dll
-
-# Confirm all models on NPU after launch
-# Check terminal for: ✓ QNNExecutionProvider confirmed
+```
+✓ YOLO: QNNExecutionProvider
+✓ Depth: QNNExecutionProvider
+✓ NPU active — 47ms combined inference
 ```
 
-### Other Hardware — Demo Mode
+### Other Hardware
 
-```bash
-python main.py --demo
-# Runs full interface with pre-recorded disaster footage
-# CPU inference, all features available, no Qualcomm required
-```
+CIPHER runs on any Windows machine with Python 3.12. Models fall back to CPU
+automatically. All features work — just slower inference.
 
 ### Performance Comparison
 
