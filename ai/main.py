@@ -433,7 +433,7 @@ def api_sync_vector_graph():
     if not get_graph:
         return {"synced": 0, "message": "No graph callback set"}
     try:
-        from backend.vector_db import sync_graph_nodes
+        from ai.vector_db import sync_graph_nodes
         n = sync_graph_nodes(get_graph)
         return {"synced": n}
     except Exception as e:
@@ -456,7 +456,7 @@ async def api_voice_query(request: Request):
         elif "multipart/form-data" in content_type:
             form = await request.form()
             if "audio" in form:
-                from backend.voice_input import record_and_transcribe, transcribe_audio
+                from ai.voice_input import record_and_transcribe, transcribe_audio
                 loop = asyncio.get_event_loop()
                 file = form["audio"]
                 if file and hasattr(file, "read"):
@@ -468,7 +468,7 @@ async def api_voice_query(request: Request):
                 text = (form.get("text") or "").strip()
         if not text:
             return {"answer": "No text or audio received.", "node_ids": []}
-        from backend.query_agent import query_agent
+        from ai.query_agent import query_agent
         get_graph = state.get("get_graph_callback")
         result = await asyncio.get_event_loop().run_in_executor(
             None, lambda: query_agent(text, top_k=3, get_graph_callback=get_graph)

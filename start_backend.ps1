@@ -44,6 +44,6 @@ if ($pythonExe -match "\\") {
 $env:PYTHONPATH = $root
 $env:PHANTOM_HTTP_ONLY = "1"
 Write-Host "Starting Cipher backend on http://localhost:8000 ..." -ForegroundColor Green
-Write-Host "  Open Cipher at http://localhost:5173 (run 'npm run dev' in Drone/frontend if needed)." -ForegroundColor Gray
+Write-Host "  Open Cipher at http://localhost:5173 (run 'npm run dev' in frontend/ if needed)." -ForegroundColor Gray
 Set-Location $root
-& $pythonExe -m uvicorn Drone.local_backend.app:app --host 0.0.0.0 --port 8000
+& $pythonExe -m uvicorn backend.app:app --host 0.0.0.0 --port 8000

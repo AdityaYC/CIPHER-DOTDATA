@@ -50,7 +50,7 @@ if ($pythonExe -match "\\") {
 $env:PYTHONPATH = $root
 $env:PHANTOM_HTTP_ONLY = "1"
 Write-Host "Drone backend (with Drone2 features) starting on http://localhost:8000 ..."
-Start-Process -FilePath $pythonExe -ArgumentList "-m", "uvicorn", "Drone.local_backend.app:app", "--host", "0.0.0.0", "--port", "8000" -WorkingDirectory $root
+Start-Process -FilePath $pythonExe -ArgumentList "-m", "uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000" -WorkingDirectory $root
 
 Start-Sleep -Seconds 4
 
@@ -59,5 +59,5 @@ Write-Host "  >>> Open in browser:  http://localhost:5173  <<<" -ForegroundColor
 Write-Host "  (Cipher: Manual = webcam + YOLO; Agent, Replay.)" -ForegroundColor Gray
 Write-Host "  Ctrl+C here stops the frontend; close the backend window to stop the server." -ForegroundColor Gray
 Write-Host ""
-Set-Location "$root\Drone\frontend"
+Set-Location "$root\frontend"
 npm run dev

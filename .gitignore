@@ -19,7 +19,14 @@ models/*.pt
 models/*.zip
 models/*.data
 models/job_*/
+models/embeddings/
 !models/.gitkeep
+
+# Exports
+exports/
+
+# ChromaDB
+chroma_db/
 
 # Root-level model weights
 *.pt

@@ -1,13 +1,32 @@
-fastapi
-uvicorn[standard]
-opencv-python
-numpy
-pillow
-httpx
-onnxruntime
-# Vector DB + agentic query (local only)
-chromadb
-sentence-transformers
-pydantic-settings
-# Voice input (optional; fallback if missing)
-sounddevice
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+pillow>=11.0.0
+numpy>=2.1.0
+opencv-python>=4.8.0
+
+# Llama Vision inference
+transformers>=4.46.0
+torch>=2.5.0
+accelerate>=1.1.0
+
+# YOLO from Qualcomm or Ultralytics
+ultralytics>=8.3.0
+
+# NPU (Snapdragon): for YOLO/Depth on NPU run from repo root: .\scripts\install_onnxruntime_qnn.ps1
+# (Replaces onnxruntime with onnxruntime-qnn so QNNExecutionProvider is available.)
+
+# Agent tab: tactical query (vector DB + Genie)
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+pydantic-settings>=2.0.0
+
+# Voice: Whisper (transformers) + WebM from browser
+soundfile>=0.12.0
+pydub>=0.25.0
+
+# Video analysis report (PDF)
+fpdf2>=2.7.0
+
+# Optional: for quantization/optimization (skip on Apple Silicon)
+# bitsandbytes>=0.44.0

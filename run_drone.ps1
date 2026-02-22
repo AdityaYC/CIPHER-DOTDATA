@@ -19,4 +19,4 @@ try {
 Write-Host "Starting Drone backend + Drone2 features (camera, YOLO, advisory)..."
 Write-Host "  Drone UI:  http://localhost:$port  (build first: cd Drone/frontend; npm run build)"
 Write-Host "  Health:    http://localhost:$port/health"
-python -m uvicorn Drone.local_backend.app:app --host 0.0.0.0 --port $port
+python -m uvicorn backend.app:app --host 0.0.0.0 --port $port

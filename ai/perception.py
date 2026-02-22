@@ -41,7 +41,7 @@ class YOLODetector:
         prefer_npu_over_gpu: bool = True,
     ):
         import onnxruntime as ort
-        from backend.ort_providers import get_available_providers, yolo_providers
+        from ai.ort_providers import get_available_providers, yolo_providers
 
         self.model_path = model_path
         self._last_latency_ms: float = 0.0
@@ -67,7 +67,7 @@ class YOLODetector:
             available, qnn_dll_path, use_gpu, split_npu_gpu, prefer_npu_over_gpu
         )
         if "QNNExecutionProvider" in str(prov_list):
-            from backend.ort_providers import resolve_qnn_backend_path
+            from ai.ort_providers import resolve_qnn_backend_path
             _path = resolve_qnn_backend_path(qnn_dll_path)
             logger.info("YOLO: attempting NPU (QNN) backend_path=%s", _path or "(default)")
         # Retry NPU session creation — Qualcomm NPU can need a moment to init

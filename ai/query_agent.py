@@ -15,9 +15,9 @@ try:
     from .genie_runner import run_genie, is_available as genie_available
     from .ollama_runner import run_ollama, is_available as ollama_available
 except ImportError:
-    from backend.vector_db import query as vector_query
-    from backend.genie_runner import run_genie, is_available as genie_available
-    from backend.ollama_runner import run_ollama, is_available as ollama_available
+    from ai.vector_db import query as vector_query
+    from ai.genie_runner import run_genie, is_available as genie_available
+    from ai.ollama_runner import run_ollama, is_available as ollama_available
 
 logger = logging.getLogger(__name__)
 

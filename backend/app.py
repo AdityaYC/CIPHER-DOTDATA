@@ -33,12 +33,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image
 
-# Drone2 repo root (parent of Drone folder)
+# Repo root (parent of backend/)
 _HERE = Path(__file__).resolve().parent
-_DRONE2_ROOT = _HERE.parent.parent
+_DRONE2_ROOT = _HERE.parent
 if str(_DRONE2_ROOT) not in sys.path:
     sys.path.insert(0, str(_DRONE2_ROOT))
-# So "from world_graph import WorldGraph" works when cwd is repo root (e.g. run_drone_full.ps1)
+# So "from world_graph import WorldGraph" works when cwd is repo root
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
@@ -50,10 +50,10 @@ try:
     from backend import config as phantom_config
     # So backend modules that "import config" resolve to backend.config
     sys.modules["config"] = phantom_config
-    from backend.camera_manager import CameraManager as PhantomCameraManager
-    from backend.perception import YOLODetector as PhantomYOLODetector
+    from ai.camera_manager import CameraManager as PhantomCameraManager
+    from ai.perception import YOLODetector as PhantomYOLODetector
     from backend import detection_mapper as phantom_detection_mapper
-    from backend.llm_advisory import get_advisory as phantom_get_advisory
+    from ai.llm_advisory import get_advisory as phantom_get_advisory
     _phantom = {
         "config": phantom_config,
         "cv2": cv2,
@@ -447,7 +447,7 @@ async def _agent_init_background():
     except Exception as e:
         print(f"  Agent (vector DB): skip ({e})")
     try:
-        from backend.genie_runner import is_available
+        from ai.genie_runner import is_available
         if is_available():
             print("  Agent (Genie): ready")
     except Exception:
@@ -1071,7 +1071,7 @@ async def startup_event():
         qnn_path = getattr(cfg, "QNN_DLL_PATH", None)
         if not qnn_path:
             try:
-                from backend.ort_providers import resolve_qnn_backend_path
+                from ai.ort_providers import resolve_qnn_backend_path
                 qnn_path = resolve_qnn_backend_path(None)
                 if qnn_path:
                     print(f"  NPU: using QnnHtp.dll at {qnn_path[:60]}...")
@@ -1124,7 +1124,7 @@ async def startup_event():
     try:
         from emergency_manuals import ensure_all_manuals
         ensure_all_manuals()
-        from backend.vector_db import load_manuals_from_data_dir
+        from ai.vector_db import load_manuals_from_data_dir
         n = load_manuals_from_data_dir()
         manuals_dir = str(_DRONE2_ROOT / "data" / "emergency_manuals")
         if Path(manuals_dir).is_dir():
@@ -1149,7 +1149,7 @@ async def startup_event():
     except Exception:
         pass
     try:
-        from backend.ort_providers import get_available_providers
+        from ai.ort_providers import get_available_providers
         avail = get_available_providers()
         if npu_active:
             print("  >>> NPU (QNN): ACTIVE — YOLO/Depth using Snapdragon NPU")
@@ -1704,7 +1704,7 @@ async def _run_voice_query_with_text(text: str):
         if p not in sys.path:
             sys.path.insert(0, p)
     try:
-        from backend.query_agent import query_agent
+        from ai.query_agent import query_agent
     except ImportError:
         import importlib.util
         _qpath = _DRONE2_ROOT / "backend" / "query_agent.py"
@@ -1718,7 +1718,7 @@ async def _run_voice_query_with_text(text: str):
         try:
             if str(_DRONE2_ROOT) not in sys.path:
                 sys.path.insert(0, str(_DRONE2_ROOT))
-            from backend.vector_db import sync_graph_nodes
+            from ai.vector_db import sync_graph_nodes
             sync_graph_nodes(_world_graph.get_graph)
         except Exception:
             pass
@@ -1844,7 +1844,7 @@ async def api_voice_upload(audio: UploadFile = File(..., alias="audio")):
     try:
         if str(_DRONE2_ROOT) not in sys.path:
             sys.path.insert(0, str(_DRONE2_ROOT))
-        from backend.voice_input import transcribe_audio
+        from ai.voice_input import transcribe_audio
         wav_bytes = await audio.read()
         if not wav_bytes or len(wav_bytes) == 0:
             return {"answer": "Audio was empty. Record for a few seconds then click STOP.", "node_ids": [], "text": ""}
@@ -1880,7 +1880,7 @@ async def api_voice_query(request: Request):
             if upload is not None and hasattr(upload, "read"):
                 if str(_DRONE2_ROOT) not in sys.path:
                     sys.path.insert(0, str(_DRONE2_ROOT))
-                from backend.voice_input import transcribe_audio
+                from ai.voice_input import transcribe_audio
                 loop = asyncio.get_event_loop()
                 wav_bytes = await upload.read()
                 if not wav_bytes or len(wav_bytes) == 0:
@@ -1910,7 +1910,7 @@ def api_sync_vector_graph():
     try:
         if str(_DRONE2_ROOT) not in sys.path:
             sys.path.insert(0, str(_DRONE2_ROOT))
-        from backend.vector_db import sync_graph_nodes
+        from ai.vector_db import sync_graph_nodes
         n = sync_graph_nodes(_world_graph.get_graph)
         return {"synced": n}
     except Exception as e:
