@@ -6,6 +6,12 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
 # SSL certs (generate with scripts/generate_ssl_certs.sh)
 ssl/*.pem
 

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_DRONE2_ROOT = _HERE.parent.parent
+_DRONE2_ROOT = _HERE.parent
 DATA_MANUALS = _DRONE2_ROOT / "data" / "emergency_manuals"
 
 

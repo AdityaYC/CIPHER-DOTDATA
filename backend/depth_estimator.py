@@ -26,7 +26,7 @@ METRIC_MAX_M = 50.0
 
 # Qualcomm ONNX fallback (relative model — still needs scale mapping)
 _HERE = Path(__file__).resolve().parent
-_REPO_ROOT = _HERE.parent.parent
+_REPO_ROOT = _HERE.parent
 QUALCOMM_ONNX_PATH = _REPO_ROOT / "models" / "depth_anything_v2_indoor_small_onnx_mnl2019oq.onnx"
 ONNX_INPUT_SIZE = 518
 ONNX_DEPTH_MIN_M = 0.2

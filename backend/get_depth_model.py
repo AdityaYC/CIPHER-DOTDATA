@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 _HERE   = Path(__file__).resolve().parent
-_MODELS = _HERE.parent.parent / "models"
+_MODELS = _HERE.parent / "models"
 _OUT    = _MODELS / "depth_anything_v2_vits.onnx"
 _MODELS.mkdir(parents=True, exist_ok=True)
 

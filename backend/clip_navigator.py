@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_DRONE2_ROOT = _HERE.parent.parent
+_DRONE2_ROOT = _HERE.parent
 CLIP_CACHE = _DRONE2_ROOT / "models" / "clip"
 
 _model = None
