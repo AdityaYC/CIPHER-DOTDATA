@@ -431,6 +431,14 @@ class WorldGraph:
         self.last_position = None
         self._imported_next.clear()
         self._imported_prev.clear()
+
+    def clear_imported_nodes(self) -> None:
+        """Remove only nodes with source='imported'. Keeps live nodes so Agent thumbnails come only from the current upload."""
+        to_remove = [nid for nid, n in self.nodes.items() if n.source == "imported"]
+        for nid in to_remove:
+            del self.nodes[nid]
+        self._imported_next.clear()
+        self._imported_prev.clear()
     
     @staticmethod
     def _calculate_distance(

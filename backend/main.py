@@ -121,9 +121,10 @@ async def background_loop():
                         bbox = d.get("bbox", [0, 0, 0, 0])
                         x1, y1, x2, y2 = [int(round(x)) for x in bbox]
                         cls = d.get("class", "?")
-                        conf = d.get("confidence", 0)
                         cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 102), 2)
-                        label = f"{cls} {conf:.0%}"
+                        label = cls
+                        if d.get("distance_meters") is not None:
+                            label += f" {int(d['distance_meters'] * 100 / 25)}"
                         cv2.putText(vis, label, (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 102), 1)
                     _, jpeg = cv2.imencode(".jpg", vis)
                     state["processed_frames"][drone_id] = jpeg.tobytes()

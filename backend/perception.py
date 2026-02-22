@@ -28,14 +28,24 @@ COCO_CLASSES = [
 
 
 class YOLODetector:
-    """Run YOLOv8 object detection via ONNX Runtime (QNN NPU or CPU fallback)."""
+    """Run YOLOv8 object detection via ONNX Runtime (NPU + GPU + CPU)."""
 
-    def __init__(self, model_path: str, qnn_dll_path: str | None = None, confidence_threshold: float = 0.45):
+    def __init__(
+        self,
+        model_path: str,
+        qnn_dll_path: str | None = None,
+        confidence_threshold: float = 0.45,
+        input_size: int = 640,
+        use_gpu: bool = True,
+        split_npu_gpu: bool = True,
+        prefer_npu_over_gpu: bool = True,
+    ):
         import onnxruntime as ort
+        from backend.ort_providers import get_available_providers, yolo_providers
 
         self.model_path = model_path
         self._last_latency_ms: float = 0.0
-        self._input_size = 640
+        self._input_size = int(input_size)
         self._conf_threshold = confidence_threshold
 
         # Resolve model path (may be relative to project root)
@@ -47,21 +57,52 @@ class YOLODetector:
                     model_path = str(candidate)
                     break
 
-        prov_list = []
-        if qnn_dll_path and Path(qnn_dll_path).exists():
-            prov_list.append(("QNNExecutionProvider", {"backend_path": qnn_dll_path}))
-        prov_list.append("CPUExecutionProvider")
-        try:
-            self._session = ort.InferenceSession(model_path, providers=prov_list)
-        except Exception as e:
-            logger.warning(f"QNN failed: {e}, using CPU only")
-            self._session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        # Session options: enable graph optimizations for faster inference
+        sess_opts = ort.SessionOptions()
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_opts.intra_op_num_threads = 2  # avoid CPU oversubscription when NPU/GPU used
+
+        available = get_available_providers()
+        prov_list = yolo_providers(
+            available, qnn_dll_path, use_gpu, split_npu_gpu, prefer_npu_over_gpu
+        )
+        if "QNNExecutionProvider" in str(prov_list):
+            from backend.ort_providers import resolve_qnn_backend_path
+            _path = resolve_qnn_backend_path(qnn_dll_path)
+            logger.info("YOLO: attempting NPU (QNN) backend_path=%s", _path or "(default)")
+        # Retry NPU session creation — Qualcomm NPU can need a moment to init
+        last_err = None
+        for attempt in range(4):
+            try:
+                self._session = ort.InferenceSession(
+                    model_path, sess_options=sess_opts, providers=prov_list
+                )
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 3 and "QNNExecutionProvider" in str(prov_list):
+                    import time
+                    time.sleep(1.0 * (attempt + 1))  # give NPU time to init
+                    continue
+                logger.warning(
+                    "NPU/GPU failed (attempt %d): %s — using CPU. Check QnnHtp.dll path in config.",
+                    attempt + 1, e
+                )
+                self._session = ort.InferenceSession(
+                    model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"]
+                )
+                break
 
         active = self._session.get_providers()
-        if "QNNExecutionProvider" not in active:
-            logger.warning("\033[91m NPU NOT IN USE — Only CPUExecutionProvider. Check QNN_DLL_PATH.\033[0m")
+        if "QNNExecutionProvider" in active:
+            logger.info(f"YOLO: NPU (QNN) — providers {active}")
+        elif "CUDAExecutionProvider" in active or "DmlExecutionProvider" in active:
+            logger.info(f"YOLO: GPU — providers {active}")
         else:
-            logger.info(f"Providers: {active}")
+            logger.warning(
+                "\033[93m YOLO on CPU. For NPU: pip install onnxruntime-qnn (Windows Snapdragon).\033[0m"
+            )
         self._input_name = self._session.get_inputs()[0].name
 
     def preprocess(self, frame: np.ndarray) -> np.ndarray:
@@ -84,7 +125,14 @@ class YOLODetector:
         h_orig, w_orig = frame.shape[:2]
         inp = self.preprocess(frame)
         start = time.perf_counter()
-        out = self._session.run(None, {self._input_name: inp})
+        # Retry once on failure (NPU/HTP can glitch or restart)
+        try:
+            out = self._session.run(None, {self._input_name: inp})
+        except Exception as e1:
+            try:
+                out = self._session.run(None, {self._input_name: inp})
+            except Exception:
+                raise e1
         self._last_latency_ms = (time.perf_counter() - start) * 1000
 
         # YOLOv8 ONNX output: (1, 84, 8400) or (1, 8400, 84) depending on export

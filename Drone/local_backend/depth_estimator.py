@@ -63,17 +63,33 @@ class DepthEstimator:
         try:
             opts = ort.SessionOptions()
             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            available = ort.get_available_providers()
-            # Find QnnHtp.dll bundled with onnxruntime (works without Qualcomm SDK installed)
-            qnn_dll = Path(ort.__file__).parent / "capi" / "QnnHtp.dll"
-            prov_list: list = []
-            if "QNNExecutionProvider" in available and qnn_dll.exists():
-                prov_list.append(("QNNExecutionProvider", {"backend_path": str(qnn_dll)}))
-            prov_list.append("CPUExecutionProvider")
+            # NPU + GPU: prefer NPU so Task Manager shows NPU utilisation (needs onnxruntime-qnn)
+            try:
+                from backend.ort_providers import get_available_providers, depth_providers
+                from backend import config
+                qnn_path = getattr(config, "QNN_DLL_PATH", None)
+                available = get_available_providers()
+                use_gpu = getattr(config, "USE_GPU", True)
+                split_npu_gpu = getattr(config, "SPLIT_NPU_GPU", False)
+                prefer_npu = getattr(config, "PREFER_NPU_OVER_GPU", True)
+                prov_list = depth_providers(
+                    available, qnn_path, use_gpu, split_npu_gpu, prefer_npu
+                )
+            except Exception:
+                qnn_dll = Path(ort.__file__).parent / "capi" / "QnnHtp.dll"
+                available = set(ort.get_available_providers())
+                prov_list = []
+                if "QNNExecutionProvider" in available and qnn_dll.exists():
+                    prov_list.append(("QNNExecutionProvider", {"backend_path": str(qnn_dll)}))
+                prov_list.append("CPUExecutionProvider")
             self._session = ort.InferenceSession(str(QUALCOMM_ONNX_PATH), opts, providers=prov_list)
             self._backend = "qualcomm_onnx"
             active = self._session.get_providers()
-            print(f"  Depth: Depth Anything V2 ONNX on {active[0]}")
+            primary = active[0] if active else "?"
+            if "QNNExecutionProvider" in active:
+                print(f"  Depth: Depth Anything V2 ONNX on NPU (QNN)")
+            else:
+                print(f"  Depth: Depth Anything V2 ONNX on {primary}")
             return True
         except Exception as e:
             logger.warning(f"  Depth: Qualcomm ONNX load failed — {e}")

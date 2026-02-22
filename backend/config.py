@@ -54,14 +54,21 @@ MAP_WIDTH = 800
 MAP_HEIGHT = 600
 
 # --- YOLO ---
+# Use 640 for better accuracy (NPU is fast enough). Set YOLO_USE_FAST = True for speed over accuracy.
+YOLO_USE_FAST = False  # False = 640 model (accuracy); True = 320 model (faster, less accurate)
 YOLO_ONNX_PATH = "models/yolov8_det.onnx"
+YOLO_ONNX_FAST_PATH = "models/yolov8_det_320.onnx"
 YOLO_CONFIDENCE_THRESHOLD = 0.45
-YOLO_INPUT_SIZE = 640  # YOLOv8 expects 640x640
+YOLO_INPUT_SIZE = 640  # Used when loading 640 model; 320 when loading fast model
 
-# --- NPU ---
-# Update this path after checking the laptop. Run: dir C:\Qualcomm
-# Browse to: C:\Qualcomm\AIStack\QAIRT\<version>\lib\arm64x-windows-msvc\
-QNN_DLL_PATH = r"C:\Users\hackathon user\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages\onnxruntime\capi\QnnHtp.dll"
+# --- NPU (Qualcomm Hexagon) — required for track; Task Manager will show NPU utilisation ---
+# Run .\scripts\install_onnxruntime_qnn.ps1 from repo root so QNNExecutionProvider is available.
+PREFER_NPU_OVER_GPU = True  # YOLO and Depth use NPU first (faster); do not set False
+USE_GPU = True  # Fallback when NPU unavailable
+SPLIT_NPU_GPU = False  # Keep False so YOLO and Depth both use NPU
+# QNN backend DLL — leave None to auto-detect (onnxruntime-qnn bundles it in capi/QnnHtp.dll)
+# If YOLO stays on CPU, set to full path to QnnHtp.dll, e.g. <Python site-packages>/onnxruntime/capi/QnnHtp.dll
+QNN_DLL_PATH = None  # If None, backend auto-resolves QnnHtp.dll at startup (Qualcomm AIStack / ort package).
 
 # --- LLM ---
 LLM_MODEL = "phi3:mini"

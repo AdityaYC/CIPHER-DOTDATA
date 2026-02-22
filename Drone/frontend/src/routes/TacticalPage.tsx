@@ -155,7 +155,7 @@ export function TacticalPage() {
         ctx.fillStyle = "#c0c8d4";
         ctx.font = "10px Courier New";
         ctx.fillText(
-          `${d.class} ${(d.confidence * 100).toFixed(0)}%`,
+          d.class,
           d.map_x - 20,
           d.map_y + r + 12
         );

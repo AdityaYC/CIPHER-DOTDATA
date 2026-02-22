@@ -20,20 +20,20 @@ export function ModeSwitch() {
         Manual
       </NavLink>
       <NavLink
+        to="/automatic"
+        className={({ isActive }) =>
+          `mode-switch-item ${isActive ? "active" : ""}`
+        }
+      >
+        Automatic
+      </NavLink>
+      <NavLink
         to="/replay"
         className={({ isActive }) =>
           `mode-switch-item ${isActive ? "active" : ""}`
         }
       >
         Replay
-      </NavLink>
-      <NavLink
-        to="/3d-map"
-        className={({ isActive }) =>
-          `mode-switch-item ${isActive ? "active" : ""}`
-        }
-      >
-        3D World
       </NavLink>
     </nav>
   );

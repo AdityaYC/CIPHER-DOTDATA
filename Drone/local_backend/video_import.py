@@ -57,6 +57,7 @@ def _run_import_impl(
     import numpy as np
 
     _set_status("running", 0, 0, "Opening video...")
+    world_graph.clear_imported_nodes()
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         _set_status("error", 0, 0, "Could not open video")

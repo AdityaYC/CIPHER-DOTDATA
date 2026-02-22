@@ -6,6 +6,9 @@ import { AGENT_API_URL, MAX_AGENT_STEPS } from "../config";
 
 const MAX_CONVERSATION_HISTORY = 5;
 
+type Detection = { class: string; confidence: number };
+type LiveFrame = { id: string; ts: number; image_b64: string; detections: Detection[] };
+
 type ConversationEntry = {
   query: string;
   answer: string;
@@ -43,12 +46,54 @@ export function AgentPage() {
   const [, setRecommendedAction] = useState("");
   const [conversationHistory, setConversationHistory] = useState<ConversationEntry[]>([]);
   const [agentStatus, setAgentStatus] = useState<"ready" | "initializing">("initializing");
-  const [, setNodeThumbnails] = useState<Record<string, string>>({});
+  const [nodeThumbnails, setNodeThumbnails] = useState<Record<string, string>>({});
+  const [uploadedNodeIds, setUploadedNodeIds] = useState<string[]>([]);
   type CurrentNode = { node_id: string; image_b64: string | null; detections: Array<{ class_name: string; confidence: number }>; structural_risk_score: number } | null;
   const [currentNode, setCurrentNode] = useState<CurrentNode>(null);
   const [vOverlayOn, setVOverlayOn] = useState(false);
   const [importStatus, setImportStatus] = useState<{ status: string; current: number; total: number; message: string; nodes_added?: number } | null>(null);
+  const [uploadedVideoThumbnail, setUploadedVideoThumbnail] = useState<string | null>(null);
   const videoImportInputRef = useRef<HTMLInputElement>(null);
+  const [graphRefreshKey] = useState(0);
+
+  // Live YOLO frame gallery (multi-select with fresh YOLO on pin)
+  const [liveFrames, setLiveFrames] = useState<LiveFrame[]>([]);
+  const [pinnedFrameIds, setPinnedFrameIds] = useState<Set<string>>(new Set());
+  const [freshDetections, setFreshDetections] = useState<Record<string, Detection[] | "loading">>({});
+
+  const pinnedFrames = liveFrames.filter((f) => pinnedFrameIds.has(f.id));
+
+  const getDetections = (frame: LiveFrame): Detection[] | "loading" => {
+    const f = freshDetections[frame.id];
+    if (f === "loading") return "loading";
+    if (Array.isArray(f)) return f;
+    return frame.detections;
+  };
+
+  const togglePin = async (frame: LiveFrame) => {
+    const alreadyPinned = pinnedFrameIds.has(frame.id);
+    setPinnedFrameIds((prev) => {
+      const next = new Set(prev);
+      alreadyPinned ? next.delete(frame.id) : next.add(frame.id);
+      return next;
+    });
+    if (!alreadyPinned && !(frame.id in freshDetections)) {
+      setFreshDetections((prev) => ({ ...prev, [frame.id]: "loading" }));
+      try {
+        const base = agentApiBase();
+        const res = await fetch(`${base}/api/run_yolo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image_b64: frame.image_b64 }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const dets: Detection[] = Array.isArray(data.detections) ? data.detections : [];
+        setFreshDetections((prev) => ({ ...prev, [frame.id]: dets }));
+      } catch {
+        setFreshDetections((prev) => { const n = { ...prev }; delete n[frame.id]; return n; });
+      }
+    }
+  };
 
   // Agent status: AGENT READY / AGENT INITIALIZING
   useEffect(() => {
@@ -90,7 +135,7 @@ export function AgentPage() {
     return () => clearInterval(t);
   }, [importStatus?.status]);
 
-  // Fetch graph: thumbnails + current node (first of agentNodeIds or first in graph)
+  // Fetch graph: thumbnails + current node. Prefer frames from uploaded video (source=imported), not manual/live footage.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -99,18 +144,33 @@ export function AgentPage() {
         const r = await fetch(`${base}/api/graph_3d`);
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
-        const nodes: Array<{ node_id?: string; image_b64?: string | null; detections?: Array<{ class_name: string; confidence: number }>; structural_risk_score?: number }> = data.nodes || [];
+        const nodes: Array<{ node_id?: string; image_b64?: string | null; source?: string; detections?: Array<{ class_name: string; confidence: number }>; structural_risk_score?: number }> = data.nodes || [];
+        const importedNodes = nodes.filter((n) => n.source === "imported");
+        const displayNodes = importedNodes.length > 0 ? importedNodes : nodes;
+        const orderIds = displayNodes.map((n) => n.node_id).filter((id): id is string => Boolean(id));
+        setUploadedNodeIds(orderIds);
         const map: Record<string, string> = {};
+        for (const n of importedNodes) {
+          if (n.node_id && n.image_b64) map[n.node_id] = `data:image/jpeg;base64,${n.image_b64}`;
+        }
         for (const n of nodes) {
           const id = n.node_id;
           const b64 = n.image_b64;
-          if (id && b64 && (agentNodeIds.length === 0 || agentNodeIds.includes(id))) {
+          if (id && b64 && (agentNodeIds.length === 0 || agentNodeIds.includes(id)) && !map[id]) {
             map[id] = `data:image/jpeg;base64,${b64}`;
           }
         }
         setNodeThumbnails(map);
-        const pickId = agentNodeIds.length > 0 ? agentNodeIds[0] : nodes[0]?.node_id;
-        const full = nodes.find((n) => n.node_id === pickId) ?? nodes[0];
+        const firstImported = importedNodes[0];
+        if (importedNodes.length === 0) {
+          setUploadedVideoThumbnail(null);
+        } else if (firstImported?.image_b64) {
+          setUploadedVideoThumbnail(`data:image/jpeg;base64,${firstImported.image_b64}`);
+        }
+        const pickId = agentNodeIds.length > 0
+          ? (agentNodeIds.find((id) => displayNodes.some((n) => n.node_id === id)) ?? displayNodes[0]?.node_id)
+          : displayNodes[0]?.node_id;
+        const full = nodes.find((n) => n.node_id === pickId) ?? displayNodes[0];
         if (full?.node_id) {
           setCurrentNode({
             node_id: full.node_id,
@@ -127,7 +187,26 @@ export function AgentPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [agentNodeIds.join(",")]);
+  }, [agentNodeIds.join(","), graphRefreshKey]);
+
+  // Poll live YOLO frames from backend
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const base = agentApiBase();
+        const r = await fetch(`${base}/api/live_frames`);
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!cancelled && Array.isArray(data.frames)) {
+          setLiveFrames(data.frames.slice().reverse());
+        }
+      } catch {}
+    };
+    poll();
+    const t = setInterval(poll, 1500);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
 
   // Auto-join session from URL on mount
   useEffect(() => {
@@ -164,7 +243,12 @@ export function AgentPage() {
         const res = await fetch(`${base}/api/voice_query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({
+            text,
+            frame_detections: pinnedFrames.length > 0
+              ? pinnedFrames.map((f) => { const d = getDetections(f); return d === "loading" ? f.detections : d; })
+              : undefined,
+          }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -268,6 +352,9 @@ export function AgentPage() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    setUploadedVideoThumbnail(null);
+    setUploadedNodeIds([]);
+    setCurrentNode(null);
     setImportStatus({ status: "running", current: 0, total: 0, message: "Uploading..." });
     try {
       const base = agentApiBase();
@@ -321,10 +408,43 @@ export function AgentPage() {
       </div>
 
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
-        {/* Left 65%: current node frame (no boxes), detection pill bottom-left, structural risk bottom-right, V overlay */}
+        {/* Left 65%: pinned live frames grid OR uploaded video frame */}
         <div style={{ flex: "0 0 65%", minWidth: 0, position: "relative", background: "#000", display: "flex", flexDirection: "column" }}>
-          <div style={{ flex: 1, position: "relative", minHeight: 0 }}>
-            {currentNode?.image_b64 ? (
+          <div style={{ flex: 1, position: "relative", minHeight: 0, overflow: "hidden" }}>
+            {pinnedFrames.length > 0 ? (
+              <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "grid", gridTemplateColumns: pinnedFrames.length === 1 ? "1fr" : "repeat(2, 1fr)", gap: 2, flex: 1, minHeight: 0 }}>
+                  {pinnedFrames.map((frame) => {
+                    const dets = getDetections(frame);
+                    const isLoading = dets === "loading";
+                    const detList = isLoading ? [] : dets;
+                    return (
+                      <div key={frame.id} style={{ position: "relative", overflow: "hidden", background: "#000" }}>
+                        <img src={`data:image/jpeg;base64,${frame.image_b64}`} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", opacity: isLoading ? 0.5 : 1 }} />
+                        {isLoading && (
+                          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)" }}>
+                            <span style={{ color: "#3388ff", fontSize: "0.75rem", fontWeight: 700 }}>RUNNING YOLO…</span>
+                          </div>
+                        )}
+                        {!isLoading && detList.length > 0 && (
+                          <div style={{ position: "absolute", bottom: 4, left: 4, background: "rgba(0,0,0,0.8)", color: "#fff", padding: "0.2rem 0.4rem", borderRadius: 4, fontSize: "0.65rem" }}>
+                            {detList.slice(0, 4).map((d) => `${d.class} ${Math.round(d.confidence * 100)}%`).join(" · ")}
+                          </div>
+                        )}
+                        <button onClick={() => togglePin(frame)} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: 4, padding: "0.15rem 0.4rem", fontSize: "0.6rem", cursor: "pointer" }}>✕</button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ flexShrink: 0, background: "rgba(51,136,255,0.15)", borderTop: "1px solid rgba(51,136,255,0.3)", padding: "0.25rem 0.5rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: "0.7rem", color: "#3388ff" }}>
+                    {pinnedFrames.length} frame{pinnedFrames.length > 1 ? "s" : ""} pinned
+                    {pinnedFrames.some((f) => getDetections(f) === "loading") ? " — running YOLO…" : " — ask below"}
+                  </span>
+                  <button onClick={() => setPinnedFrameIds(new Set())} style={{ background: "none", border: "1px solid rgba(51,136,255,0.4)", color: "#3388ff", borderRadius: 4, padding: "0.15rem 0.4rem", fontSize: "0.65rem", cursor: "pointer" }}>Unpin all</button>
+                </div>
+              </div>
+            ) : (importStatus?.status === "complete" && currentNode?.image_b64) ? (
               <div style={{ width: "100%", height: "100%", position: "relative" }}>
                 <img
                   src={`data:image/jpeg;base64,${currentNode.image_b64}`}
@@ -346,21 +466,21 @@ export function AgentPage() {
                     }}
                   />
                 )}
+                {currentNode.detections?.length > 0 && (
+                  <div style={{ position: "absolute", bottom: 8, left: 8, background: "rgba(0,0,0,0.75)", color: "#fff", padding: "0.3rem 0.6rem", borderRadius: 6, fontSize: "0.75rem" }}>
+                    {currentNode.detections.map((d) => d.class_name).join(" · ")}
+                  </div>
+                )}
+                {currentNode.structural_risk_score > 0 && (
+                  <div style={{ position: "absolute", bottom: 8, right: 8, background: "rgba(255,136,0,0.85)", color: "#000", padding: "0.3rem 0.6rem", borderRadius: 6, fontSize: "0.75rem", fontWeight: 600 }}>
+                    Structural risk
+                  </div>
+                )}
               </div>
             ) : (
               <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", padding: "2rem", textAlign: "center" }}>
-                <p style={{ marginBottom: "0.5rem" }}>Add a video (right panel), then ask questions about it.</p>
-                <p style={{ fontSize: "0.85rem" }}>e.g. &quot;Where is the fire extinguisher?&quot; or &quot;Find the exit&quot;</p>
-              </div>
-            )}
-            {currentNode && currentNode.detections?.length > 0 && (
-              <div style={{ position: "absolute", bottom: 8, left: 8, background: "rgba(0,0,0,0.75)", color: "#fff", padding: "0.3rem 0.6rem", borderRadius: 6, fontSize: "0.75rem" }}>
-                {currentNode.detections.map((d) => `${d.class_name} ${Math.round(d.confidence * 100)}%`).join(" · ")}
-              </div>
-            )}
-            {currentNode && currentNode.structural_risk_score > 0 && (
-              <div style={{ position: "absolute", bottom: 8, right: 8, background: "rgba(255,136,0,0.85)", color: "#000", padding: "0.3rem 0.6rem", borderRadius: 6, fontSize: "0.75rem", fontWeight: 600 }}>
-                Structural risk
+                <p style={{ marginBottom: "0.5rem" }}>Pin a live frame (right panel) or add a video to ask questions.</p>
+                <p style={{ fontSize: "0.85rem" }}>e.g. &quot;What do you see?&quot; or &quot;Find the exit&quot;</p>
               </div>
             )}
           </div>
@@ -372,26 +492,89 @@ export function AgentPage() {
           </div>
         </div>
 
-        {/* Right 35%: chat last 5, input, mic; Searching... step N of 20; then response + confidence + NPU — 42ms · SPATIAL */}
+        {/* Right 35%: live frame gallery + chat + input */}
         <div style={{ flex: "0 0 35%", minWidth: 0, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(255,255,255,0.1)", background: "rgba(0,0,0,0.2)" }}>
+          {/* Live frames from START AI */}
+          {liveFrames.length > 0 && (
+            <div style={{ flexShrink: 0, borderBottom: "1px solid rgba(255,255,255,0.1)", padding: "0.4rem" }}>
+              <div style={{ fontSize: "0.65rem", color: "rgba(255,255,255,0.5)", marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+                <span>LIVE FRAMES — click to pin &amp; ask</span>
+                {pinnedFrameIds.size > 0 && <span style={{ color: "#3388ff" }}>{pinnedFrameIds.size} pinned</span>}
+              </div>
+              <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 4 }}>
+                {liveFrames.map((frame) => {
+                  const isPinned = pinnedFrameIds.has(frame.id);
+                  return (
+                    <div key={frame.id} onClick={() => togglePin(frame)} style={{ flexShrink: 0, width: 80, cursor: "pointer", border: isPinned ? "2px solid #3388ff" : "2px solid rgba(255,255,255,0.1)", borderRadius: 4, overflow: "hidden", position: "relative", opacity: isPinned ? 1 : 0.75 }}>
+                      <img src={`data:image/jpeg;base64,${frame.image_b64}`} alt="" style={{ width: "100%", display: "block" }} />
+                      {frame.detections.length > 0 && (
+                        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "0.55rem", padding: "1px 3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {frame.detections.slice(0, 3).map((d) => d.class).join(", ")}
+                        </div>
+                      )}
+                      {isPinned && <div style={{ position: "absolute", top: 2, right: 2, width: 8, height: 8, background: "#3388ff", borderRadius: "50%", boxShadow: "0 0 4px #3388ff" }} />}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {showQueryForm && (
             <div style={{ padding: "0.5rem", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
               <div style={{ marginBottom: 8 }}>
-                <span style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.8)", marginRight: 8 }}>1. Add video</span>
-                <input ref={videoImportInputRef} type="file" accept=".mp4,.avi,.mov,.mkv,.webm" style={{ display: "none" }} onChange={onVideoImportFileChange} />
-                <button type="button" className="replay-btn" onClick={onAddRecordedVideo} disabled={importStatus?.status === "running"}>
-                  {importStatus?.status === "running" ? "Importing…" : "Add video"}
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.8)", marginRight: 4 }}>1. Add video</span>
+                  <input ref={videoImportInputRef} type="file" accept=".mp4,.avi,.mov,.mkv,.webm" style={{ display: "none" }} onChange={onVideoImportFileChange} />
+                  <button type="button" className="replay-btn" onClick={onAddRecordedVideo} disabled={importStatus?.status === "running"}>
+                    {importStatus?.status === "running" ? "Importing…" : "Add video"}
+                  </button>
+                </div>
+                {uploadedVideoThumbnail && (
+                  <div style={{ marginTop: 8, padding: 6, background: "rgba(255,255,255,0.06)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.12)" }}>
+                    <div style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.7)", marginBottom: 4 }}>Your video</div>
+                    <img
+                      src={uploadedVideoThumbnail}
+                      alt="Uploaded video"
+                      style={{ width: "100%", maxWidth: 160, height: 90, objectFit: "cover", borderRadius: 4, display: "block" }}
+                    />
+                    {uploadedNodeIds.length > 1 && (
+                      <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+                        {uploadedNodeIds.slice(0, 5).map((id) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => setAgentNodeIds([id])}
+                            style={{
+                              padding: 0,
+                              border: currentNode?.node_id === id ? "2px solid #3388ff" : "1px solid rgba(255,255,255,0.2)",
+                              borderRadius: 4,
+                              overflow: "hidden",
+                              background: "none",
+                              cursor: "pointer",
+                              flex: "0 0 auto",
+                            }}
+                          >
+                            {nodeThumbnails[id] ? (
+                              <img src={nodeThumbnails[id]} alt="" style={{ width: 40, height: 28, objectFit: "cover", display: "block" }} />
+                            ) : (
+                              <div style={{ width: 40, height: 28, background: "rgba(255,255,255,0.1)" }} />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {importStatus?.status === "running" && (
-                  <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.7)", marginLeft: 6 }}>{importStatus.message}</span>
+                  <span style={{ fontSize: "0.7rem", color: "#3388ff", marginLeft: 0, display: "block", marginTop: 4 }}>{importStatus.message}</span>
                 )}
                 {importStatus?.status === "complete" && (
-                  <span style={{ fontSize: "0.75rem", color: "#6f6", marginLeft: 6 }}>
-                    Ready ({(importStatus.nodes_added ?? 0)} nodes). Ask below.
+                  <span style={{ fontSize: "0.75rem", color: "#6f6", marginLeft: 0, display: "block", marginTop: 4 }}>
+                    Ready ({(importStatus.nodes_added ?? 0)} frames). Ask below.
                   </span>
                 )}
                 {importStatus?.status === "error" && (
-                  <span style={{ fontSize: "0.75rem", color: "#f88", marginLeft: 6 }}>{importStatus.message}</span>
+                  <span style={{ fontSize: "0.75rem", color: "#f88", marginLeft: 0, display: "block", marginTop: 4 }}>{importStatus.message}</span>
                 )}
               </div>
               <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.7)", marginBottom: 6 }}>2. Ask a question about your video (type or voice)</div>
