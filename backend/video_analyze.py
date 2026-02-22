@@ -73,11 +73,15 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
 
     _update_job(job_id, total=max(total_frames, 1), message="Analysing frames…")
 
-    # Output video path
+    # Save the original video for browser playback (serve it as-is; canvas draws boxes on top)
     _ANALYZE_DIR.mkdir(parents=True, exist_ok=True)
-    out_video_path = _ANALYZE_DIR / f"{job_id}_annotated.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(out_video_path), fourcc, fps, (width, height))
+    ext = Path(video_path).suffix or ".mp4"
+    original_copy = _ANALYZE_DIR / f"{job_id}_original{ext}"
+    try:
+        import shutil
+        shutil.copy2(video_path, str(original_copy))
+    except Exception:
+        original_copy = Path(video_path)  # fallback: serve temp file directly
 
     # Try to get the YOLO detector from app state; fall back to ultralytics
     yolo_fn = _get_yolo_fn()
@@ -85,10 +89,6 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
     detections_by_frame = []
     objects_found: dict = {}
     frame_idx = 0
-    colors = {
-        "person": (0, 255, 102),
-        "default": (100, 149, 237),
-    }
 
     while True:
         ret, frame = cap.read()
@@ -107,11 +107,6 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
 
                     if len(bbox) == 4:
                         x1, y1, x2, y2 = [int(v) for v in bbox]
-                        color = colors.get(cls, colors["default"])
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        label = cls if dist is None else f"{cls} {round(dist * 100 / 25)}u"
-                        cv2.putText(frame, label, (x1, max(y1 - 6, 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
                         frame_dets.append({
                             "class": cls,
                             "confidence": round(conf, 3),
@@ -124,7 +119,6 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
                 pass
 
         detections_by_frame.append(frame_dets)
-        writer.write(frame)
         frame_idx += 1
 
         if frame_idx % 10 == 0 or frame_idx == total_frames:
@@ -132,30 +126,12 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
                         message=f"Frame {frame_idx} / {total_frames}")
 
     cap.release()
-    writer.release()
-
-    # Re-encode with H.264 for browser compatibility if ffmpeg available
-    final_path = out_video_path
-    try:
-        import subprocess
-        h264_path = _ANALYZE_DIR / f"{job_id}_annotated_h264.mp4"
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(out_video_path),
-             "-vcodec", "libx264", "-crf", "23", "-preset", "fast",
-             "-movflags", "+faststart", str(h264_path)],
-            capture_output=True, timeout=120
-        )
-        if result.returncode == 0 and h264_path.exists():
-            final_path = h264_path
-            out_video_path.unlink(missing_ok=True)
-    except Exception:
-        pass  # keep mp4v version if ffmpeg unavailable
 
     video_url = f"/api/video/analysis/{job_id}/video"
 
-    # Store video path for serving
+    # Store original video path for serving
     with _jobs_lock:
-        _jobs[job_id]["_video_file"] = str(final_path)
+        _jobs[job_id]["_video_file"] = str(original_copy)
 
     _update_job(
         job_id,
@@ -170,9 +146,10 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
         detections_by_frame=detections_by_frame,
     )
 
-    # Clean up temp input
+    # Clean up temp input (not the copy)
     try:
-        os.unlink(video_path)
+        if str(original_copy) != video_path:
+            os.unlink(video_path)
     except Exception:
         pass
 

@@ -181,14 +181,27 @@ export function AutomaticPage() {
     }
   }, [frameIndex, videoJob?.status, videoJob?.fps]);
 
-  // Redraw overlay when frame or video size changes
+  // Redraw overlay when frame or video size changes; also after video loads metadata
   useEffect(() => {
     const video = videoPlaybackRef.current;
     if (!video || videoJob?.status !== "complete") return;
-    drawVideoOverlay();
+
+    const onSeeked = () => drawVideoOverlay();
+    const onLoaded = () => drawVideoOverlay();
     const onResize = () => drawVideoOverlay();
+
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("loadeddata", onLoaded);
+    video.addEventListener("loadedmetadata", onLoaded);
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    drawVideoOverlay();
+
+    return () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("loadeddata", onLoaded);
+      video.removeEventListener("loadedmetadata", onLoaded);
+      window.removeEventListener("resize", onResize);
+    };
   }, [videoJob?.status, frameIndex, drawVideoOverlay]);
 
   // Reset to frame 0 when new video is ready
@@ -317,9 +330,12 @@ export function AutomaticPage() {
                   <video
                     ref={videoPlaybackRef}
                     src={`${MAIN_BACKEND}${videoJob.video_url}`}
-                    style={{ width: "100%", display: "block", objectFit: "contain", maxHeight: "70vh" }}
+                    style={{ width: "100%", display: "block", objectFit: "contain", minHeight: 200, maxHeight: "70vh" }}
                     crossOrigin="anonymous"
                     playsInline
+                    controls
+                    onLoadedMetadata={() => drawVideoOverlay()}
+                    onSeeked={() => drawVideoOverlay()}
                   />
                   <canvas
                     ref={videoOverlayRef}

@@ -1460,8 +1460,9 @@ def api_video_analysis_report_pdf(job_id: str):
 
 
 @app.get("/api/video/analysis/{job_id}/video")
-def api_video_analysis_video(job_id: str):
-    """Serve the annotated output video for a completed analysis job."""
+def api_video_analysis_video(job_id: str, request: Request):
+    """Serve the original uploaded video so the browser can play it natively.
+    Canvas overlay in the frontend draws YOLO boxes on top per frame."""
     from video_analyze import get_job, get_job_video_path
     job = get_job(job_id)
     if job is None or job["status"] != "complete":
@@ -1469,8 +1470,14 @@ def api_video_analysis_video(job_id: str):
     video_file = get_job_video_path(job_id)
     if not video_file or not Path(video_file).exists():
         raise HTTPException(status_code=404, detail="Video file not found")
-    media_type = "video/mp4"
-    return FileResponse(video_file, media_type=media_type)
+    ext = Path(video_file).suffix.lower()
+    mime_map = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+                ".avi": "video/x-msvideo", ".mkv": "video/x-matroska"}
+    media_type = mime_map.get(ext, "video/mp4")
+    return FileResponse(video_file, media_type=media_type, headers={
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-cache",
+    })
 
 
 @app.post("/api/export_vr")
