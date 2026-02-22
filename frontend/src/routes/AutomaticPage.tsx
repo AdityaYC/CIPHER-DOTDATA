@@ -254,7 +254,7 @@ export function AutomaticPage() {
               <input
                 type="file"
                 accept=".mp4,.avi,.mov,.mkv,.webm"
-                disabled={videoUploading}
+                disabled={videoUploading || videoJob?.status === "running"}
                 style={{ position: "absolute", width: 0, height: 0, opacity: 0 }}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -262,13 +262,50 @@ export function AutomaticPage() {
                   e.target.value = "";
                 }}
               />
-              <span style={{ padding: "0.4rem 0.75rem", background: "#00ff66", color: "#0a0f19", borderRadius: 6, fontWeight: 600 }}>Choose file</span>
-              <span>MP4, AVI, MOV, MKV, WEBM — YOLO + depth</span>
+              <span style={{
+                padding: "0.4rem 0.75rem",
+                background: (videoUploading || videoJob?.status === "running") ? "rgba(0,255,102,0.3)" : "#00ff66",
+                color: "#0a0f19", borderRadius: 6, fontWeight: 600,
+                cursor: (videoUploading || videoJob?.status === "running") ? "not-allowed" : "pointer",
+              }}>
+                {videoUploading ? "Uploading…" : videoJob?.status === "running" ? "Analysing…" : "Choose file"}
+              </span>
+              <span style={{ color: "rgba(255,255,255,0.6)", fontSize: "0.82rem" }}>MP4, AVI, MOV, MKV, WEBM</span>
             </label>
-            {videoUploading && <span style={{ fontSize: "0.8rem" }}>Uploading…</span>}
-            {videoJob?.status === "running" && (
-              <span style={{ fontSize: "0.8rem" }}>
-                Analyzing… {videoJob.current} / {videoJob.total} (YOLO + depth)
+
+            {/* Progress bar */}
+            {(videoUploading || videoJob?.status === "running") && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+                <div style={{
+                  width: "100%", height: 10, background: "rgba(255,255,255,0.1)",
+                  borderRadius: 6, overflow: "hidden",
+                }}>
+                  <div style={{
+                    height: "100%",
+                    borderRadius: 6,
+                    background: "linear-gradient(90deg, #00ff66, #00cc55)",
+                    transition: "width 0.3s ease",
+                    width: videoUploading
+                      ? "100%"
+                      : videoJob && videoJob.total > 0
+                        ? `${Math.round((videoJob.current / videoJob.total) * 100)}%`
+                        : "5%",
+                    animation: videoUploading ? "pulse-bar 1.2s ease-in-out infinite" : "none",
+                  }} />
+                </div>
+                <span style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.75)" }}>
+                  {videoUploading
+                    ? "Uploading video…"
+                    : videoJob && videoJob.total > 0
+                      ? `Analysing frame ${videoJob.current} of ${videoJob.total} — ${Math.round((videoJob.current / videoJob.total) * 100)}%`
+                      : "Starting analysis…"}
+                </span>
+              </div>
+            )}
+
+            {videoJob?.status === "complete" && (
+              <span style={{ fontSize: "0.82rem", color: "#00ff66" }}>
+                ✓ Analysis complete — {videoJob.total_frames} frames, {Object.keys(videoJob.summary?.objects_found ?? {}).length} object classes
               </span>
             )}
             {videoJob?.status === "error" && (

@@ -545,6 +545,11 @@ body {
   50% { opacity: 1; }
 }
 
+@keyframes pulse-bar {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 .loading-hint {
   color: rgba(255, 255, 255, 0.4);
   font-size: 0.75rem;

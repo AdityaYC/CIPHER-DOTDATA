@@ -1459,6 +1459,20 @@ def api_video_analysis_report_pdf(job_id: str):
     return FileResponse(str(pdf_path), media_type="application/pdf", filename=f"cipher_video_report_{job_id}.pdf")
 
 
+@app.get("/api/video/analysis/{job_id}/video")
+def api_video_analysis_video(job_id: str):
+    """Serve the annotated output video for a completed analysis job."""
+    from video_analyze import get_job, get_job_video_path
+    job = get_job(job_id)
+    if job is None or job["status"] != "complete":
+        raise HTTPException(status_code=404, detail="Job not found or not complete")
+    video_file = get_job_video_path(job_id)
+    if not video_file or not Path(video_file).exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    media_type = "video/mp4"
+    return FileResponse(video_file, media_type=media_type)
+
+
 @app.post("/api/export_vr")
 def export_vr():
     """Export PLY + offline VR viewer HTML to exports/; copy three.min.js if needed. Returns URL to open."""
