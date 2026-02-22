@@ -83,45 +83,52 @@ def _run_analyze(job_id: str, video_path: str, use_depth: bool = False):
     except Exception:
         original_copy = Path(video_path)  # fallback: serve temp file directly
 
+    # Run YOLO every N frames — scene doesn't change frame-to-frame so detections
+    # from the last inferred frame are valid for the N-1 skipped frames.
+    # N=4 → 4x speedup (300 inferences instead of 1220 for a typical clip)
+    YOLO_EVERY_N = 4
+
     # Try to get the YOLO detector from app state; fall back to ultralytics
     yolo_fn = _get_yolo_fn()
 
     detections_by_frame = []
     objects_found: dict = {}
     frame_idx = 0
+    last_dets: list = []   # cached from last YOLO run
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame_dets = []
-        if yolo_fn is not None:
+        # Only run YOLO inference on every Nth frame
+        if yolo_fn is not None and frame_idx % YOLO_EVERY_N == 0:
             try:
                 raw_dets = yolo_fn(frame)
+                last_dets = []
                 for det in raw_dets:
                     cls = str(det.get("class_name") or det.get("class", "object"))
                     conf = float(det.get("confidence", 0))
                     bbox = det.get("bbox") or det.get("box") or []
                     dist = det.get("distance_meters")
-
                     if len(bbox) == 4:
                         x1, y1, x2, y2 = [int(v) for v in bbox]
-                        frame_dets.append({
+                        last_dets.append({
                             "class": cls,
                             "confidence": round(conf, 3),
                             "bbox": [x1, y1, x2, y2],
                             "distance_meters": dist,
                         })
                         objects_found[cls] = max(objects_found.get(cls, 0),
-                                                  sum(1 for d in frame_dets if d["class"] == cls))
+                                                  sum(1 for d in last_dets if d["class"] == cls))
             except Exception:
-                pass
+                last_dets = []
 
-        detections_by_frame.append(frame_dets)
+        # All frames (including skipped) get the cached detections
+        detections_by_frame.append(list(last_dets))
         frame_idx += 1
 
-        if frame_idx % 10 == 0 or frame_idx == total_frames:
+        if frame_idx % 30 == 0 or frame_idx == total_frames:
             _update_job(job_id, current=frame_idx,
                         message=f"Frame {frame_idx} / {total_frames}")
 
@@ -165,39 +172,45 @@ def run_analyze_async(job_id: str, video_path: str, use_depth: bool = False):
     t.start()
 
 
+_yolo_fn_cache = None
+
 def _get_yolo_fn():
-    """Return a callable(frame) -> list[dict] using existing app YOLO or ultralytics fallback."""
+    """Return a cached callable(bgr_frame) -> list[dict]. Built once, reused for all frames."""
+    global _yolo_fn_cache
+    if _yolo_fn_cache is not None:
+        return _yolo_fn_cache
+
     # Try app's phantom YOLO detector first (already loaded, NPU-accelerated)
     try:
         import sys
+        from PIL import Image
         app_mod = sys.modules.get("backend.app") or sys.modules.get("app")
         if app_mod:
             detector = getattr(app_mod, "phantom_yolo_detector", None)
             if detector is not None:
-                def _phantom_detect(frame):
-                    import numpy as np
-                    from PIL import Image
-                    img = Image.fromarray(frame[:, :, ::-1])  # BGR→RGB
-                    return detector.detect(img)
-                return _phantom_detect
+                def _phantom_detect(frame, _det=detector, _Img=Image):
+                    img = _Img.fromarray(frame[:, :, ::-1])  # BGR→RGB once
+                    return _det.detect(img)
+                _yolo_fn_cache = _phantom_detect
+                return _yolo_fn_cache
 
-        models = getattr(app_mod, "models", None) if app_mod else None
-        if models and hasattr(models, "detect_objects"):
-            def _models_detect(frame):
-                from PIL import Image
-                img = Image.fromarray(frame[:, :, ::-1])
-                return models.detect_objects(img)
-            return _models_detect
+            models = getattr(app_mod, "models", None)
+            if models and hasattr(models, "detect_objects"):
+                def _models_detect(frame, _m=models, _Img=Image):
+                    img = _Img.fromarray(frame[:, :, ::-1])
+                    return _m.detect_objects(img)
+                _yolo_fn_cache = _models_detect
+                return _yolo_fn_cache
     except Exception:
         pass
 
-    # Ultralytics fallback
+    # Ultralytics fallback — load model once
     try:
         from ultralytics import YOLO
         _model = YOLO("yolov8n.pt")
 
-        def _ultralytics_detect(frame):
-            results = _model(frame, verbose=False)
+        def _ultralytics_detect(frame, _m=_model):
+            results = _m(frame, verbose=False)
             dets = []
             for r in results:
                 for box in r.boxes:
@@ -212,7 +225,8 @@ def _get_yolo_fn():
                         "distance_meters": None,
                     })
             return dets
-        return _ultralytics_detect
+        _yolo_fn_cache = _ultralytics_detect
+        return _yolo_fn_cache
     except Exception:
         return None
 
