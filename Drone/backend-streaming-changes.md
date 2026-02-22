@@ -435,7 +435,7 @@ data: {"type":"agent_step","agent_id":0,"step":3,...}\n\n
 
 The frontend reads the streaming endpoint URL from the `VITE_AGENT_STREAM_URL` environment variable. Default is:
 ```
-https://zhangbrwubb--keryx-agents-stream.modal.run
+https://your-deployment--agents-stream.modal.run
 ```
 
 Update this to match whatever URL Modal assigns to the new endpoint after deployment.

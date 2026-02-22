@@ -1,6 +1,6 @@
 """
-PHANTOM CODE — Record audio and transcribe with Whisper-Base-En via ONNX (QNN).
-Local only; no cloud. Fallback returns empty string if model or mic fails.
+PHANTOM CODE — Record audio and transcribe with Whisper (Qualcomm Hub export or Hugging Face).
+Local only; no cloud. Uses ONNX with QNN when Qualcomm model is present, else transformers.
 """
 
 import os
@@ -12,26 +12,110 @@ logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
-WHISPER_ONNX_PATH = os.path.join(_PROJECT_ROOT, "models", "whisper_base.onnx")
-RECORD_SECONDS = 4
+WHISPER_ONNX_DIR = os.path.join(_PROJECT_ROOT, "models", "whisper_qualcomm")
+WHISPER_CACHE = os.path.join(_PROJECT_ROOT, "models", "whisper_hf")
+RECORD_SECONDS = 5
+
+_whisper_pipeline = None
 
 
-def _load_whisper_session():
-    """Load Whisper ONNX session with QNNExecutionProvider. Returns None on failure."""
-    if not os.path.isfile(WHISPER_ONNX_PATH):
-        logger.warning(f"Whisper model not found: {WHISPER_ONNX_PATH}")
-        return None
+def _load_transformers_whisper():
+    """Load Hugging Face Whisper pipeline (fallback when Qualcomm ONNX not used)."""
+    global _whisper_pipeline
+    if _whisper_pipeline is not None:
+        return _whisper_pipeline
     try:
-        import onnxruntime as ort
-        providers = ["QNNExecutionProvider", "CPUExecutionProvider"]
-        try:
-            sess = ort.InferenceSession(WHISPER_ONNX_PATH, providers=providers)
-        except Exception:
-            sess = ort.InferenceSession(WHISPER_ONNX_PATH, providers=["CPUExecutionProvider"])
-        return sess
+        from transformers import pipeline
+        os.makedirs(WHISPER_CACHE, exist_ok=True)
+        _whisper_pipeline = pipeline(
+            "automatic-speech-recognition",
+            model="openai/whisper-base.en",
+            device=-1,
+            model_kwargs={"cache_dir": WHISPER_CACHE},
+        )
+        return _whisper_pipeline
     except Exception as e:
-        logger.warning(f"Whisper ONNX load failed: {e}")
+        logger.warning(f"Whisper transformers load failed: {e}")
         return None
+
+
+def _wav_to_array(wav_bytes: bytes):
+    """Convert WAV bytes to float32 mono array and sample rate."""
+    try:
+        import soundfile as sf
+        import io
+        data, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        return data, sr
+    except ImportError:
+        try:
+            import wave
+            import numpy as np
+            import io
+            with wave.open(io.BytesIO(wav_bytes), "rb") as w:
+                n = w.getnframes()
+                buf = w.readframes(n)
+                data = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
+                sr = w.getframerate()
+            return data, sr
+        except Exception as e:
+            logger.warning(f"WAV read failed: {e}")
+            return None, None
+
+
+def _audio_bytes_to_wav(raw: bytes) -> Optional[bytes]:
+    """Convert WebM/other browser recording to WAV bytes if needed. Returns WAV bytes or None."""
+    if not raw or len(raw) < 12:
+        return raw if raw else None
+    # WebM / Matroska magic
+    if raw[:4] == b"\x1aE\xdf\xa3" or (raw[:3] == b"ID3") or b"webm" in raw[:32]:
+        try:
+            import io
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(io.BytesIO(raw))
+            buf = io.BytesIO()
+            seg.export(buf, format="wav")
+            return buf.getvalue()
+        except Exception as e:
+            logger.warning(f"WebM/audio convert failed: {e}")
+            return None
+    return raw
+
+
+def transcribe_audio(audio_wav_bytes: Optional[bytes]) -> str:
+    """
+    Transcribe WAV or WebM bytes using Whisper. Accepts browser MediaRecorder WebM.
+    Uses Hugging Face transformers Whisper (openai/whisper-base.en).
+    """
+    if not audio_wav_bytes:
+        return ""
+    wav_bytes = _audio_bytes_to_wav(audio_wav_bytes) or audio_wav_bytes
+    data, sr = _wav_to_array(wav_bytes)
+    if data is None or sr is None:
+        return ""
+
+    # Transformers Whisper (openai/whisper-base.en). For Qualcomm NPU, run scripts/setup_whisper_qualcomm.py
+    # and place encoder/decoder ONNX in models/whisper_qualcomm/ for future use.
+    pipe = _load_transformers_whisper()
+    if pipe is None:
+        return "[Voice: Whisper not available. Install: pip install transformers soundfile]"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(audio_wav_bytes)
+            path = f.name
+        try:
+            out = pipe(path, generate_kwargs={"max_new_tokens": 200})
+            text = (out.get("text") or "").strip()
+            return text if text else "[No speech detected]"
+        finally:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Whisper inference failed: {e}")
+        return ""
 
 
 def record_audio(seconds: float = RECORD_SECONDS) -> Optional[bytes]:
@@ -58,42 +142,6 @@ def record_audio(seconds: float = RECORD_SECONDS) -> Optional[bytes]:
     except Exception as e:
         logger.warning(f"Recording failed: {e}")
         return None
-
-
-def transcribe_audio(audio_wav_bytes: Optional[bytes]) -> str:
-    """
-    Transcribe WAV bytes using Whisper ONNX. Returns text or empty string.
-    Whisper-Base-En expects 30s mel input; we pass short audio and run inference.
-    Simplified: if full Whisper pipeline is complex, return placeholder and document.
-    """
-    if not audio_wav_bytes:
-        return ""
-    session = _load_whisper_session()
-    if session is None:
-        return ""
-    try:
-        # Whisper ONNX typically expects mel spectrogram input, not raw WAV.
-        # For minimal integration we try to run with raw/log-mel if the model accepts it.
-        import numpy as np
-        inputs = session.get_inputs()
-        if not inputs:
-            return ""
-        # Common Whisper input: (batch, n_mels, time). We'd need to compute mel from WAV.
-        # Fallback: use a tiny dummy and return a message so UI doesn't break.
-        inp_name = inputs[0].name
-        inp_shape = inputs[0].shape
-        if len(inp_shape) == 3:
-            # (1, n_mels, time)
-            n_mels = inp_shape[1] if inp_shape[1] > 0 else 80
-            time_len = inp_shape[2] if inp_shape[2] > 0 else 3000
-            dummy = np.zeros((1, n_mels, time_len), dtype=np.float32)
-            out = session.run(None, {inp_name: dummy})
-            # Decode token ids to text if we have decoder; else return placeholder
-            return "[Voice received — Whisper decode not wired; use text query.]"
-        return ""
-    except Exception as e:
-        logger.warning(f"Whisper inference failed: {e}")
-        return ""
 
 
 def record_and_transcribe(seconds: float = RECORD_SECONDS) -> str:

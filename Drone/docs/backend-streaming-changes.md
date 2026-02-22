@@ -40,8 +40,8 @@ Content-Type: application/json
 
 **Implementation sketch:**
 ```python
-session_events = modal.Dict.from_name("keryx-session-events", create_if_missing=True)
-session_meta = modal.Dict.from_name("keryx-session-meta", create_if_missing=True)
+session_events = modal.Dict.from_name("session-events", create_if_missing=True)
+session_meta = modal.Dict.from_name("session-meta", create_if_missing=True)
 
 @app.function(image=agent_image, timeout=600)
 @modal.web_endpoint(method="POST")
@@ -363,7 +363,7 @@ data: {"type":"agent_step","agent_id":0,"step":3,...}\n\n
 The frontend reads endpoints from environment variables:
 
 ```
-VITE_AGENT_API_URL=https://zhangbrwubb--keryx-agents-api.modal.run
+VITE_AGENT_API_URL=https://your-deployment--agents-api.modal.run
 ```
 
 The frontend will call:

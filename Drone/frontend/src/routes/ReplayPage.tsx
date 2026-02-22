@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { API_BASE_URL } from "../config";
 
 type ReplayRow = {
   index: number;
@@ -25,6 +27,11 @@ type ImagesManifest = {
 const AUTO_TRAJECTORY_URL = "/replay/trajectory.csv";
 const AUTO_MANIFEST_URL = "/replay/images_manifest.json";
 const AUTO_IMAGES_BASE = "/replay/images_extracted";
+
+const replayApiBase = () =>
+  typeof window !== "undefined"
+    ? API_BASE_URL || window.location.origin
+    : "http://localhost:8000";
 
 function normalizeKey(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9#]+/g, "");
@@ -161,7 +168,9 @@ export function ReplayPage() {
   const [boundRows, setBoundRows] = useState<BoundRow[]>([]);
   const [frameIndex, setFrameIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(15);
+  const [playbackSpeed, setPlaybackSpeed] = useState<0.5 | 1 | 2 | 4>(1); // 0.5x, 1x, 2x, 4x
+  const baseFps = 15;
+  const fps = baseFps * playbackSpeed;
   const [error, setError] = useState("");
   const [, setAutoStatus] = useState("Trying default replay assets...");
   const [imageUrl, setImageUrl] = useState("");
@@ -253,10 +262,14 @@ export function ReplayPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const progressLabel = useMemo(() => {
-    if (!current) return "No trajectory loaded";
-    return `Frame ${current.index + 1}/${totalFrames} | t=${current.timestampSeconds.toFixed(3)}s`;
+  const nodeLabel = useMemo(() => {
+    if (!current || totalFrames === 0) return "Node 0 / 0";
+    return `Node ${current.index + 1} / ${totalFrames}`;
   }, [current, totalFrames]);
+  const timestampLabel = useMemo(() => {
+    if (!current) return "";
+    return current.timestampSeconds.toFixed(3) + "s";
+  }, [current]);
 
   const onTrajectoryFile = async (file: File | null) => {
     setError("");
@@ -318,105 +331,102 @@ export function ReplayPage() {
     setError("");
   };
 
+  /** Load frames from imported video (world graph). Add video on Agent or 3D World first. */
+  const loadFromImportedVideo = useCallback(async () => {
+    setError("");
+    setPlaying(false);
+    setFrameIndex(0);
+    try {
+      const base = replayApiBase();
+      const r = await fetch(`${base}/api/graph_3d`);
+      if (!r.ok) throw new Error("Failed to load map data");
+      const data = await r.json();
+      const nodes: Array<{ node_id?: string; image_b64?: string | null; pose?: [number, number, number] | null }> =
+        data.nodes || [];
+      const withFrames = nodes.filter((n) => n.image_b64);
+      if (withFrames.length === 0) {
+        setError("No video frames in map. Add a recorded video on the Agent or 3D World tab first.");
+        setRows([]);
+        setBoundRows([]);
+        setAutoStatus("No imported video — add video on Agent or 3D World first.");
+        return;
+      }
+      const bound: BoundRow[] = withFrames.map((n, i) => {
+        const [x = 0, y = 0, z = 0] = n.pose || [];
+        return {
+          index: i,
+          timestampLabel: `${i + 1}`,
+          timestampSeconds: i * 0.1,
+          x,
+          y,
+          z,
+          imageUrl: n.image_b64 ? `data:image/jpeg;base64,${n.image_b64}` : undefined,
+        };
+      });
+      setRows(bound.map((b) => ({ ...b, imageUrl: undefined })));
+      setBoundRows(bound);
+      setAutoStatus(`Loaded imported video: ${bound.length} frames. Use Play to replay.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load imported video");
+      setRows([]);
+      setBoundRows([]);
+      setAutoStatus("Load failed. Is the backend running?");
+    }
+  }, []);
+
   return (
-    <section className="replay-page">
-      {/* Viewport takes most of the space */}
-      <div className="viewport-card replay-viewport">
+    <section className="replay-page" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {/* Frame top 85% — hard cut, no overlays except timestamp top-left */}
+      <div style={{ flex: "0 0 85%", minHeight: 0, position: "relative", background: "#000" }}>
         {imageUrl ? (
-          <img
-            className="viewport-image"
-            src={imageUrl}
-            alt="Replay frame"
-          />
+          <img src={imageUrl} alt="Replay frame" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
         ) : (
-          <div className="replay-empty">Load trajectory CSV + images to begin replay.</div>
-        )}
-        {current && (
-          <div className="replay-coords">
-            <div>x: {current.x.toFixed(3)} m</div>
-            <div>y: {current.y.toFixed(3)} m</div>
-            <div>z: {current.z.toFixed(3)} m</div>
+          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: "0.9rem" }}>
+            Import video on 3D World or Agent, then click &quot;Load from imported video&quot;. Or upload CSV + images.
           </div>
         )}
-        {/* Status overlay */}
-        <div className="replay-status-overlay">
-          <span className="pose">{progressLabel}</span>
-          {!!error && <span className="status error">{error}</span>}
-        </div>
+        {timestampLabel && (
+          <div style={{ position: "absolute", top: 8, left: 8, fontFamily: "monospace", fontSize: "0.85rem", color: "#fff", background: "rgba(0,0,0,0.6)", padding: "0.25rem 0.5rem", borderRadius: 4 }}>
+            {timestampLabel}
+          </div>
+        )}
+        {!!error && <div style={{ position: "absolute", bottom: 8, left: 8, right: 8, color: "#f88", fontSize: "0.8rem" }}>{error}</div>}
       </div>
 
-      {/* Controls bar at bottom */}
-      <div className="replay-bottom-bar">
-        <div className="replay-slider-wrap">
+      {/* Controls bottom 15%: scrubber, PLAY/PAUSE, speed 0.5x/1x/2x/4x, Node N / M */}
+      <div style={{ flex: "0 0 15%", minHeight: 0, padding: "0.5rem 1rem", display: "flex", flexDirection: "column", gap: 8, background: "rgba(0,0,0,0.3)", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input
-            className="replay-slider"
             type="range"
             min={0}
             max={Math.max(0, totalFrames - 1)}
             value={Math.min(frameIndex, Math.max(0, totalFrames - 1))}
             onChange={(e) => setFrameIndex(parseInt(e.target.value, 10))}
             disabled={totalFrames === 0}
+            style={{ flex: 1, minWidth: 0 }}
           />
         </div>
-
-        <div className="replay-controls">
-          <button type="button" className="replay-btn" onClick={() => void tryLoadDefaults()}>
-            Reload
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="replay-btn" onClick={() => setPlaying((p) => !p)} disabled={totalFrames <= 1}>
+            {playing ? "PAUSE" : "PLAY"}
           </button>
-          <button
-            type="button"
-            className="replay-btn"
-            onClick={() => setPlaying((p) => !p)}
-            disabled={totalFrames <= 1}
-          >
-            {playing ? "Pause" : "Play"}
-          </button>
-          <button
-            type="button"
-            className="replay-btn"
-            onClick={() => setFrameIndex((i) => Math.max(0, i - 1))}
-            disabled={totalFrames === 0}
-          >
-            Prev
-          </button>
-          <button
-            type="button"
-            className="replay-btn"
-            onClick={() => setFrameIndex((i) => Math.min(totalFrames - 1, i + 1))}
-            disabled={totalFrames === 0}
-          >
-            Next
-          </button>
-          <label className="replay-fps">
-            FPS
-            <input
-              type="number"
-              min={1}
-              max={120}
-              value={fps}
-              onChange={(e) => setFps(Math.max(1, parseInt(e.target.value || "1", 10)))}
-            />
-          </label>
-
-          <div className="replay-tools">
-            <label className="replay-input">
-              Upload CSV
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                onChange={(e) => onTrajectoryFile(e.target.files?.[0] ?? null)}
-              />
-            </label>
-            <label className="replay-input">
-              Upload Images
-              <input
-                type="file"
-                accept=".png,.jpg,.jpeg,.webp"
-                multiple
-                onChange={(e) => onImagesSelected(e.target.files)}
-              />
-            </label>
-          </div>
+          {([0.5, 1, 2, 4] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className="replay-btn"
+              style={{ padding: "0.25rem 0.5rem", background: playbackSpeed === s ? "var(--swiss-accent)" : "transparent" }}
+              onClick={() => setPlaybackSpeed(s)}
+            >
+              {s}x
+            </button>
+          ))}
+          <span style={{ fontFamily: "monospace", fontSize: "0.85rem", color: "rgba(255,255,255,0.9)" }}>{nodeLabel}</span>
+          <button type="button" className="replay-btn" onClick={loadFromImportedVideo} style={{ marginLeft: "auto" }}>Load from imported video</button>
+          <label className="replay-btn" style={{ cursor: "pointer", margin: 0 }}>CSV<input type="file" accept=".csv" style={{ display: "none" }} onChange={(e) => onTrajectoryFile(e.target.files?.[0] ?? null)} /></label>
+          <label className="replay-btn" style={{ cursor: "pointer", margin: 0 }}>Images<input type="file" accept=".png,.jpg,.jpeg,.webp" multiple style={{ display: "none" }} onChange={(e) => onImagesSelected(e.target.files)} /></label>
+          <Link to="/3d-map" className="replay-btn" style={{ textDecoration: "none", color: "inherit" }}>3D World</Link>
+          <Link to="/agent" className="replay-btn" style={{ textDecoration: "none", color: "inherit" }}>Agent</Link>
         </div>
       </div>
     </section>

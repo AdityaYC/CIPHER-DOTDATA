@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import type { AllowedMoves } from "../api/images";
-import { MOVE_STEP, YAW_STEP_DEGREES, IPHONE_STREAM_URL, API_BASE_URL, BACKEND_FEED_BASE } from "../config";
-import { ViewportControls } from "../components/ViewportControls";
-import type { Pose } from "../types/pose";
-import { fetchTacticalStatus, fetchTacticalAdvisory, fetchTacticalDetections, setMission, MISSIONS, type TacticalStatus, type TacticalAdvisory, type TacticalDetections } from "../api/tactical";
+import { IPHONE_STREAM_URL, API_BASE_URL, BACKEND_FEED_BASE } from "../config";
+import { fetchTacticalStatus, type TacticalStatus } from "../api/tactical";
 
 const MAIN_BACKEND = API_BASE_URL || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 const USE_BACKEND_FEED = BACKEND_FEED_BASE !== undefined && BACKEND_FEED_BASE !== null;
@@ -14,62 +11,49 @@ const BACKEND_DOWN_PLACEHOLDER =
     '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><rect fill="#0a0f19" width="640" height="480"/><text x="320" y="220" fill="rgba(255,255,255,0.9)" font-family="sans-serif" font-size="18" text-anchor="middle">Backend not running on port 8000</text><text x="320" y="260" fill="rgba(255,255,255,0.6)" font-family="sans-serif" font-size="14" text-anchor="middle">Start it from repo root:</text><text x="320" y="295" fill="#00ff66" font-family="monospace" font-size="13" text-anchor="middle">.\\run_drone_full.ps1</text><text x="320" y="330" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-size="12" text-anchor="middle">(or open a terminal and run the backend, then refresh)</text></svg>'
   );
 
-// Tactical map: zone layout and scale for panel
-const TACTICAL_MAP_WIDTH = 800;
-const TACTICAL_MAP_HEIGHT = 600;
-const TACTICAL_MAP_SCALE = 0.5; // panel canvas 400x300
-const CAMERA_ZONES: Record<string, { x_min: number; y_min: number; x_max: number; y_max: number }> = {
-  "Drone-1": { x_min: 50, y_min: 50, x_max: 370, y_max: 550 },
-  "Drone-2": { x_min: 430, y_min: 50, x_max: 750, y_max: 550 },
-};
-const ZONE_LABELS: Record<string, string> = { "Drone-1": "SECTOR ALPHA", "Drone-2": "SECTOR BRAVO" };
-const CLASS_COLORS_MAP: Record<string, string> = {
-  person: "#00ff66",
-  bicycle: "#4488ff",
-  car: "#4488ff",
-  motorcycle: "#4488ff",
-  bus: "#4488ff",
-  truck: "#4488ff",
-  default: "#888888",
+// Overhead map: world graph nodes. Colors by category
+const MAP_NODE_COLORS: Record<string, string> = {
+  survivor: "#00ff66",
+  hazard: "#ff3333",
+  structural: "#ff8800",
+  exit: "#3388ff",
+  clear: "#888888",
+  unknown: "#888888",
 };
 
 interface Detection {
   class: string;
   confidence: number;
   bbox: [number, number, number, number]; // x1,y1,x2,y2 in pixels
+  depth_m?: number; // optional, show on box when present
 }
 
-const initialPose: Pose = {
-  x: 0,
-  y: 0,
-  z: 0,
-  yaw: 0,
-};
-
-function normalizeYaw(yaw: number): number {
-  const normalized = yaw % 360;
-  return normalized < 0 ? normalized + 360 : normalized;
-}
+type GraphNode = { node_id: string; pose: [number, number, number] | null; detections?: Array<{ class_name: string; confidence: number; category?: string }> };
 
 export function ManualPage() {
-  const [pose, setPose] = useState<Pose>(initialPose);
-  const [allowed] = useState<AllowedMoves>({
-    forward: true, backward: true, left: true, right: true, turnLeft: true, turnRight: true,
-  });
-  const allowedRef = useRef(allowed);
-  allowedRef.current = allowed;
-
-  // YOLO + Llama state
   const [detections, setDetections] = useState<Detection[]>([]);
-  const [llamaText, setLlamaText] = useState<string>("");
   const [aiStatus, setAiStatus] = useState<"idle" | "connecting" | "live" | "waiting" | "error">("idle");
-  const [runLlama, setRunLlama] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sseRef = useRef<EventSource | null>(null);
-
-  // Drone2 tactical map canvas
   const mapCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; path: Array<{ x: number; y: number; z: number }>; stats?: { node_count: number; area_m2: number } } | null>(null);
+
+  const fetchGraph3d = useCallback(async () => {
+    try {
+      const r = await fetch(`${MAIN_BACKEND}/api/graph_3d`);
+      if (!r.ok) return;
+      const data = await r.json();
+      setGraphData({ nodes: data.nodes ?? [], path: data.path ?? [], stats: data.stats });
+    } catch {
+      setGraphData(null);
+    }
+  }, [MAIN_BACKEND]);
+  useEffect(() => {
+    fetchGraph3d();
+    const t = setInterval(fetchGraph3d, 2000);
+    return () => clearInterval(t);
+  }, [fetchGraph3d]);
 
   // Backend reachable: when false, show placeholder and don't hammer 8000 (fixes ERR_CONNECTION_REFUSED spam)
   const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
@@ -105,20 +89,14 @@ export function ManualPage() {
     return () => clearInterval(t);
   }, [backendReachable]);
 
-  // Tactical features — poll only when backend reachable; when down, poll slowly just to re-detect
   const [tacticalStatus, setTacticalStatus] = useState<TacticalStatus | null>(null);
-  const [tacticalDetections, setTacticalDetections] = useState<TacticalDetections | null>(null);
-  const [advisory, setAdvisory] = useState<TacticalAdvisory | null>(null);
-  const [selectedMission, setSelectedMission] = useState("search_rescue");
   useEffect(() => {
     const poll = async () => {
-      const [s, a, d] = await Promise.all([fetchTacticalStatus(), fetchTacticalAdvisory(), fetchTacticalDetections()]);
+      const s = await fetchTacticalStatus();
       if (s) {
         setTacticalStatus(s);
         if (backendReachable === false) setBackendReachable(true);
       }
-      if (a) setAdvisory(a);
-      if (d) setTacticalDetections(d);
     };
     if (backendReachable === false) {
       const t = setInterval(poll, 5000);
@@ -129,10 +107,6 @@ export function ManualPage() {
     const t = setInterval(poll, 1500);
     return () => clearInterval(t);
   }, [backendReachable]);
-  const handleMissionClick = useCallback(async (id: string) => {
-    setSelectedMission(id);
-    await setMission(id);
-  }, []);
 
   // Draw YOLO boxes on canvas overlay
   useEffect(() => {
@@ -160,7 +134,8 @@ export function ManualPage() {
       const bh = (y2 - y1) * scaleY;
 
       const conf = Math.round(det.confidence * 100);
-      const label = `${det.class} ${conf}%`;
+      const depthStr = det.depth_m != null ? ` ${det.depth_m.toFixed(1)}m` : "";
+      const label = `${det.class} ${conf}%${depthStr}`;
 
       // Box
       ctx.strokeStyle = "#FF3000";
@@ -185,7 +160,7 @@ export function ManualPage() {
       sseRef.current.close();
     }
     setAiStatus("connecting");
-    const url = `${MAIN_BACKEND}/live_detections?run_llama=${runLlama}`;
+    const url = `${MAIN_BACKEND}/live_detections?run_llama=false`;
     const sse = new EventSource(url);
     sseRef.current = sse;
 
@@ -194,7 +169,6 @@ export function ManualPage() {
         const data = JSON.parse(e.data);
         if (data.type === "detections") {
           setDetections(data.detections ?? []);
-          if (data.llama_description) setLlamaText(data.llama_description);
           setAiStatus("live");
         } else if (data.type === "waiting") {
           setAiStatus("waiting");
@@ -205,169 +179,78 @@ export function ManualPage() {
     };
 
     sse.onerror = () => setAiStatus("error");
-  }, [runLlama]);
+  }, []);
 
   const stopDetections = useCallback(() => {
     sseRef.current?.close();
     sseRef.current = null;
     setDetections([]);
-    setLlamaText("");
     setAiStatus("idle");
   }, []);
 
   useEffect(() => () => { sseRef.current?.close(); }, []);
 
-  // Draw tactical map (zones + detections at map_x, map_y)
+  // Overhead tactical map: world graph nodes as colored dots, path as white line, current as pulsing white
   useEffect(() => {
     const canvas = mapCanvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !graphData?.nodes?.length) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const W = TACTICAL_MAP_WIDTH * TACTICAL_MAP_SCALE;
-    const H = TACTICAL_MAP_HEIGHT * TACTICAL_MAP_SCALE;
-    const S = TACTICAL_MAP_SCALE;
-    canvas.width = W;
-    canvas.height = H;
+    const W = canvas.width = 320;
+    const H = canvas.height = 200;
     ctx.fillStyle = "#0a0f19";
     ctx.fillRect(0, 0, W, H);
-
-    // Grid
-    ctx.strokeStyle = "#0d1520";
-    ctx.lineWidth = 1;
-    for (let x = 0; x <= W; x += 40 * S) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-    for (let y = 0; y <= H; y += 40 * S) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-
-    const feeds = tacticalStatus?.feeds ?? {};
-
-    // Zones (Drone-1, Drone-2)
-    (["Drone-1", "Drone-2"] as const).forEach((droneId) => {
-      const zone = CAMERA_ZONES[droneId];
-      if (!zone) return;
-      const active = feeds[droneId];
-      ctx.strokeStyle = active ? "#00ff66" : "#ff4444";
-      ctx.setLineDash([6, 4]);
-      ctx.lineWidth = 2;
-      ctx.strokeRect(zone.x_min * S, zone.y_min * S, (zone.x_max - zone.x_min) * S, (zone.y_max - zone.y_min) * S);
-      ctx.setLineDash([]);
-      const label = ZONE_LABELS[droneId] ?? droneId;
-      ctx.font = "11px Courier New";
-      ctx.fillStyle = active ? "#00ff66" : "#ff4444";
-      ctx.fillText(label, zone.x_min * S + 4, zone.y_min * S + 14);
-      if (!active) {
-        ctx.fillStyle = "#ff4444";
-        ctx.font = "12px Courier New";
-        const zW = (zone.x_max - zone.x_min) * S, zH = (zone.y_max - zone.y_min) * S;
-        ctx.fillText("FEED LOST", zone.x_min * S + zW / 2 - 30, zone.y_min * S + zH / 2 - 4);
-      }
+    const path = graphData.path || [];
+    const nodes = graphData.nodes;
+    const xs = path.length ? path.map((p) => p.x) : nodes.map((n) => n.pose?.[0] ?? 0).filter((v) => typeof v === "number");
+    const ys = path.length ? path.map((p) => p.y) : nodes.map((n) => n.pose?.[1] ?? 0).filter((v) => typeof v === "number");
+    const minX = Math.min(...xs, 0);
+    const maxX = Math.max(...xs, 0);
+    const minY = Math.min(...ys, 0);
+    const maxY = Math.max(...ys, 0);
+    const pad = 20;
+    const rangeX = maxX - minX || 1;
+    const rangeY = maxY - minY || 1;
+    const scale = Math.min((W - pad * 2) / rangeX, (H - pad * 2) / rangeY);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const toScreen = (x: number, y: number) => ({
+      sx: W / 2 + (x - cx) * scale,
+      sy: H / 2 - (y - cy) * scale,
     });
-
-    // Detections (map_x, map_y from /api/detections)
-    const detections = tacticalDetections ?? {};
-    (["Drone-1", "Drone-2"] as const).forEach((droneId) => {
-      const list = detections[droneId] ?? [];
-      const zone = CAMERA_ZONES[droneId];
-      if (!zone || !feeds[droneId]) return;
-      if (list.length === 0) {
-        ctx.fillStyle = "rgba(192, 200, 212, 0.25)";
-        ctx.font = "11px Courier New";
-        const zW = (zone.x_max - zone.x_min) * S, zH = (zone.y_max - zone.y_min) * S;
-        ctx.fillText("NO CONTACTS", zone.x_min * S + zW / 2 - 35, zone.y_min * S + zH / 2);
-        return;
+    if (path.length >= 2) {
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const { sx, sy } = toScreen(path[0].x, path[0].y);
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < path.length; i++) {
+        const { sx: px, sy: py } = toScreen(path[i].x, path[i].y);
+        ctx.lineTo(px, py);
       }
-      list.forEach((d) => {
-        const mx = d.map_x * S, my = d.map_y * S;
-        const color = CLASS_COLORS_MAP[d.class] ?? CLASS_COLORS_MAP.default;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(mx, my, 6 * S, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#0a0f19";
-        ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    const lastId = nodes[nodes.length - 1]?.node_id;
+    nodes.forEach((n) => {
+      const pos = n.pose;
+      if (!pos) return;
+      const { sx, sy } = toScreen(pos[0], pos[1]);
+      const cat = n.detections?.[0]?.category ?? "unknown";
+      const color = MAP_NODE_COLORS[cat] ?? MAP_NODE_COLORS.unknown;
+      const isCurrent = n.node_id === lastId;
+      ctx.fillStyle = isCurrent ? "#fff" : color;
+      ctx.beginPath();
+      ctx.arc(sx, sy, isCurrent ? 5 : 3, 0, Math.PI * 2);
+      ctx.fill();
+      if (isCurrent) {
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 2;
         ctx.stroke();
-        ctx.fillStyle = "#c0c8d4";
-        ctx.font = "10px Courier New";
-        ctx.fillText(`${d.class} ${(d.confidence * 100).toFixed(0)}%`, mx - 20, my + 6 * S + 12);
-      });
-    });
-  }, [tacticalStatus, tacticalDetections]);
-
-  const poseLabel = useMemo(
-    () =>
-      `x: ${pose.x.toFixed(2)} | y: ${pose.y.toFixed(2)} | z: ${pose.z.toFixed(2)} | yaw: ${pose.yaw.toFixed(0)}°`,
-    [pose],
-  );
-
-  const moveByYaw = useCallback((step: number) => {
-    setPose((prev) => {
-      const radians = (prev.yaw * Math.PI) / 180;
-      return {
-        ...prev,
-        x: prev.x + Math.cos(radians) * step,
-        y: prev.y + Math.sin(radians) * step,
-      };
-    });
-  }, []);
-
-  // Strafe left/right (perpendicular to yaw direction)
-  const strafeByYaw = useCallback((step: number) => {
-    setPose((prev) => {
-      const radians = (prev.yaw * Math.PI) / 180;
-      // Perpendicular direction: rotate 90 degrees
-      return {
-        ...prev,
-        x: prev.x + Math.cos(radians + Math.PI / 2) * step,
-        y: prev.y + Math.sin(radians + Math.PI / 2) * step,
-      };
-    });
-  }, []);
-
-  const rotateYaw = useCallback((delta: number) => {
-    setPose((prev) => ({
-      ...prev,
-      yaw: normalizeYaw(prev.yaw + delta),
-    }));
-  }, []);
-
-  // Keyboard controls
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in an input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
       }
+    });
+  }, [graphData]);
 
-      const a = allowedRef.current;
-      switch (e.key.toLowerCase()) {
-        case 'w':
-          e.preventDefault();
-          if (a.forward) moveByYaw(MOVE_STEP);
-          break;
-        case 's':
-          e.preventDefault();
-          if (a.backward) moveByYaw(-MOVE_STEP);
-          break;
-        case 'a':
-          e.preventDefault();
-          if (a.left) strafeByYaw(MOVE_STEP);
-          break;
-        case 'd':
-          e.preventDefault();
-          if (a.right) strafeByYaw(-MOVE_STEP);
-          break;
-        case 'q':
-          e.preventDefault();
-          if (a.turnLeft) rotateYaw(-YAW_STEP_DEGREES);
-          break;
-        case 'e':
-          e.preventDefault();
-          if (a.turnRight) rotateYaw(YAW_STEP_DEGREES);
-          break;
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [moveByYaw, strafeByYaw, rotateYaw]);
+  const poseDisplay = useMemo(() => ({ x: 0, y: 0, z: 0, yaw: 0 }), []);
 
   return (
     <section className="manual-page">
@@ -394,11 +277,10 @@ export function ManualPage() {
         </div>
       )}
       <div className="status-bar">
-        <span className="pose">{poseLabel}</span>
-        <span className={`status ${
-          aiStatus === "live" ? "" :
-          aiStatus === "error" ? "error" : ""
-        }`}>
+        <span className="pose">
+          X {poseDisplay.x.toFixed(2)} · Y {poseDisplay.y.toFixed(2)} · Z {poseDisplay.z.toFixed(2)} · YAW {poseDisplay.yaw.toFixed(0)}°
+        </span>
+        <span className={`status ${aiStatus === "live" ? "" : aiStatus === "error" ? "error" : ""}`}>
           {aiStatus === "idle" && "AI OFF"}
           {aiStatus === "connecting" && "CONNECTING..."}
           {aiStatus === "live" && `LIVE · ${detections.length} objects`}
@@ -406,15 +288,6 @@ export function ManualPage() {
           {aiStatus === "error" && "AI ERROR — is backend running on 8000? Click STOP AI then START AI."}
         </span>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          <label style={{ fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={runLlama}
-              onChange={(e) => setRunLlama(e.target.checked)}
-              disabled={aiStatus !== "idle"}
-            />
-            Llama Vision
-          </label>
           {aiStatus === "idle" ? (
             <button className="replay-btn" onClick={startDetections}>START AI</button>
           ) : (
@@ -428,181 +301,89 @@ export function ManualPage() {
         </p>
       )}
 
-      <div className="viewport-card" style={{ position: "relative" }}>
-        {/* Camera feed: backend /api/feed or iPhone stream; placeholder when backend down to avoid ERR_CONNECTION_REFUSED */}
-        <img
-          ref={imgRef}
-          src={
-            USE_BACKEND_FEED && backendReachable === true
-              ? `${MAIN_BACKEND}/api/feed/Drone-1/processed?t=${feedTick}`
-              : USE_BACKEND_FEED && (backendReachable === false || backendReachable === null)
-                ? BACKEND_DOWN_PLACEHOLDER
-                : IPHONE_STREAM_URL
-          }
-          alt="Camera Feed"
-          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#000" }}
-          onLoad={() => {
-            const canvas = canvasRef.current;
-            const img = imgRef.current;
-            if (canvas && img) {
-              canvas.width = img.clientWidth;
-              canvas.height = img.clientHeight;
-            }
-          }}
-          onError={() => {
-            // Keep showing last frame; avoid clearing img to reduce flicker
-          }}
-        />
-        {/* Webcam & models status overlay */}
-        {USE_BACKEND_FEED && (
-          <div style={{
-            position: "absolute", top: "0.75rem", left: "0.75rem",
-            display: "flex", flexDirection: "column", gap: "0.25rem",
-            background: "rgba(0,0,0,0.75)", color: "#fff",
-            padding: "0.4rem 0.6rem", borderRadius: "6px",
-            fontSize: "0.7rem", fontWeight: 600,
-          }}>
-            <span style={{ color: tacticalStatus?.camera_ready ? "#00ff66" : "#ffaa00" }}>
-              Webcam: {tacticalStatus?.camera_ready ? "LIVE" : "Starting…"}
-            </span>
-            {tacticalStatus?.yolo_error ? (
-              <span style={{ color: "#ff6666" }} title={tacticalStatus.yolo_error}>
-                YOLO: Error — run: py -m pip install ultralytics
-              </span>
-            ) : (
-              <span style={{ color: (tacticalStatus?.yolo_loaded ?? tacticalStatus?.yolo_latency_ms != null) ? "#00ff66" : "rgba(255,255,255,0.6)" }}>
-                YOLO: {tacticalStatus?.yolo_latency_ms != null ? `Running (${Math.round(tacticalStatus.yolo_latency_ms)}ms)` : "—"}
-              </span>
-            )}
-            {backendReachable === true && !tacticalStatus?.camera_ready && (
-              <span style={{ color: "rgba(255,255,255,0.7)", fontWeight: 400, fontSize: "0.65rem" }}>
-                Check backend window: it should say &quot;Camera: laptop webcam&quot;. If it says &quot;no device opened&quot;, allow camera access in Windows Settings.
-              </span>
-            )}
-          </div>
-        )}
-        {/* YOLO detection box overlay */}
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: "absolute",
-            top: 0, left: 0,
-            width: "100%", height: "100%",
-            pointerEvents: "none",
-          }}
-        />
-        {/* Live indicator */}
-        {aiStatus === "live" && (
-          <div style={{
-            position: "absolute", top: "0.75rem", right: "0.75rem",
-            background: "rgba(0,0,0,0.7)", color: "#fff",
-            padding: "0.3rem 0.75rem", borderRadius: "4px",
-            fontSize: "0.75rem", fontWeight: 700, letterSpacing: "0.05em",
-            display: "flex", alignItems: "center", gap: "0.4rem",
-          }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#FF3000", display: "inline-block", animation: "pulse 2s infinite" }} />
-            LIVE
-          </div>
-        )}
-
-        <ViewportControls
-          onForward={() => moveByYaw(MOVE_STEP)}
-          onBackward={() => moveByYaw(-MOVE_STEP)}
-          onLeft={() => strafeByYaw(MOVE_STEP)}
-          onRight={() => strafeByYaw(-MOVE_STEP)}
-          onTurnLeft={() => rotateYaw(-YAW_STEP_DEGREES)}
-          onTurnRight={() => rotateYaw(YAW_STEP_DEGREES)}
-          allowed={allowed}
-        />
-      </div>
-
-      {/* Bottom panel: detections + world map + Drone2 tactical */}
-      <div className="ai-panel" style={{ display: "grid", gridTemplateColumns: "1fr 260px 280px", gap: 0, padding: 0 }}>
-        {/* Left: detections + llama */}
-        <div style={{ padding: "0.75rem 1rem", borderRight: "1px solid rgba(255,255,255,0.1)" }}>
-          {detections.length > 0 && (
-            <div style={{ marginBottom: llamaText ? "0.6rem" : 0 }}>
-              <span className="ai-panel-label">YOLO DETECTIONS</span>
-              <div className="detection-tags">
-                {detections.map((d, i) => (
-                  <span key={i} className="detection-tag">
-                    {d.class} <span className="det-conf">{Math.round(d.confidence * 100)}%</span>
-                  </span>
-                ))}
+      {/* 65% live feed | 35% overhead map */}
+      <div style={{ display: "flex", flex: 1, minHeight: 0, gap: "0.5rem", padding: "0.5rem 0" }}>
+        {/* Left 65%: live feed + overlays */}
+        <div className="manual-viewport-wrap" style={{ flex: "0 0 65%", minWidth: 0, display: "flex", flexDirection: "column" }}>
+          <div className="viewport-card" style={{ position: "relative", width: "100%", flex: 1, minHeight: 0 }}>
+            <img
+              ref={imgRef}
+              src={
+                USE_BACKEND_FEED && backendReachable === true
+                  ? `${MAIN_BACKEND}/api/feed/Drone-1/processed?t=${feedTick}`
+                  : USE_BACKEND_FEED && (backendReachable === false || backendReachable === null)
+                    ? BACKEND_DOWN_PLACEHOLDER
+                    : IPHONE_STREAM_URL
+              }
+              alt="Camera Feed"
+              style={{ background: "#000", width: "100%", height: "100%", objectFit: "contain" }}
+              onLoad={() => {
+                const canvas = canvasRef.current;
+                const img = imgRef.current;
+                if (canvas && img) {
+                  canvas.width = img.clientWidth;
+                  canvas.height = img.clientHeight;
+                }
+              }}
+              onError={() => {}}
+            />
+            {/* X Y Z YAW top-left */}
+            <div style={{
+              position: "absolute", top: "0.5rem", left: "0.5rem",
+              background: "rgba(0,0,0,0.75)", color: "#fff",
+              padding: "0.3rem 0.5rem", borderRadius: "4px",
+              fontFamily: "monospace", fontSize: "0.75rem",
+            }}>
+              X {poseDisplay.x.toFixed(2)} · Y {poseDisplay.y.toFixed(2)} · Z {poseDisplay.z.toFixed(2)} · YAW {poseDisplay.yaw.toFixed(0)}°
+            </div>
+            {/* NPU latency top-right */}
+            {USE_BACKEND_FEED && tacticalStatus && (
+              <div style={{
+                position: "absolute", top: "0.5rem", right: "0.5rem",
+                background: "rgba(0,0,0,0.75)", color: "#fff",
+                padding: "0.3rem 0.5rem", borderRadius: "4px",
+                fontSize: "0.7rem",
+              }}>
+                {tacticalStatus.yolo_latency_ms != null ? `NPU ${Math.round(tacticalStatus.yolo_latency_ms)}ms` : "NPU —"}
               </div>
-            </div>
-          )}
-          {!detections.length && aiStatus === "idle" && (
-            <span style={{ color: "rgba(255,255,255,0.3)", fontSize: "0.8rem" }}>Start AI to see detections</span>
-          )}
-          {llamaText && (
-            <div>
-              <span className="ai-panel-label">VISION</span>
-              <p className="ai-llama-text">{llamaText}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Middle: Drone2 tactical map (zones + detections from /api/detections) */}
-        <div style={{ padding: "0.5rem", display: "flex", flexDirection: "column", gap: "0.3rem", borderRight: "1px solid rgba(255,255,255,0.1)" }}>
-          <span className="ai-panel-label" style={{ paddingLeft: "0.25rem" }}>
-            TACTICAL MAP
-          </span>
-          <canvas
-            ref={mapCanvasRef}
-            width={TACTICAL_MAP_WIDTH * TACTICAL_MAP_SCALE}
-            height={TACTICAL_MAP_HEIGHT * TACTICAL_MAP_SCALE}
-            style={{ background: "#0a0f19", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 2, width: "100%", maxHeight: 320 }}
-          />
-          <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", fontSize: "0.65rem" }}>
-            {Object.entries(CLASS_COLORS_MAP).slice(0, 4).map(([k, c]) => (
-              <span key={k} style={{ display: "flex", alignItems: "center", gap: 3, color: "rgba(255,255,255,0.6)" }}>
-                <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />
-                {k}
-              </span>
-            ))}
+            )}
+            {/* LIVE bottom-left */}
+            {aiStatus === "live" && (
+              <div style={{
+                position: "absolute", bottom: "0.5rem", left: "0.5rem",
+                background: "rgba(0,0,0,0.7)", color: "#fff",
+                padding: "0.25rem 0.6rem", borderRadius: "4px",
+                fontSize: "0.75rem", fontWeight: 700, letterSpacing: "0.05em",
+                display: "flex", alignItems: "center", gap: "0.35rem",
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#FF3000", display: "inline-block", animation: "pulse 2s infinite" }} />
+                LIVE
+              </div>
+            )}
+            <canvas
+              ref={canvasRef}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
+            />
           </div>
         </div>
 
-        {/* Right: Drone2 tactical (advisory, mission, status) */}
-        <div style={{ padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          <span className="ai-panel-label">TACTICAL</span>
-          <div style={{ fontSize: "0.8rem", lineHeight: 1.4, color: "rgba(255,255,255,0.9)", minHeight: 48 }}>
-            {advisory?.text || "—"}
+        {/* Right 35%: overhead tactical map + node count, area, detection summary */}
+        <div style={{ flex: "0 0 35%", minWidth: 0, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          <span className="ai-panel-label">OVERHEAD MAP</span>
+          <div style={{ flex: 1, minHeight: 120, background: "#0a0f19", borderRadius: 4, border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
+            <canvas
+              ref={mapCanvasRef}
+              width={320}
+              height={200}
+              style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+            />
           </div>
-          <div style={{ fontSize: "0.65rem", color: "rgba(255,255,255,0.5)" }}>
-            {advisory?.mission?.replace(/_/g, " ")} | {advisory?.timestamp ?? "—"}
-          </div>
-          <span className="ai-panel-label" style={{ marginTop: "0.25rem" }}>MISSION</span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem" }}>
-            {MISSIONS.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                className="replay-btn"
-                style={{
-                  padding: "0.25rem 0.5rem",
-                  fontSize: "0.7rem",
-                  background: selectedMission === m.id ? "var(--swiss-accent)" : "transparent",
-                  color: selectedMission === m.id ? "#fff" : "inherit",
-                  border: "1px solid rgba(255,255,255,0.3)",
-                }}
-                onClick={() => handleMissionClick(m.id)}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-          <span className="ai-panel-label" style={{ marginTop: "0.25rem" }}>STATUS</span>
-          <div style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.7)", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-            <span>NPU: {tacticalStatus?.npu_provider ?? "—"}</span>
-            <span>YOLO: {tacticalStatus?.yolo_latency_ms != null ? `${Math.round(tacticalStatus.yolo_latency_ms)}ms` : "—"}</span>
-            <span style={{ color: tacticalStatus?.feeds?.["Drone-1"] ? "#00ff66" : "rgba(255,255,255,0.5)" }}>
-              Drone-1: {tacticalStatus?.feeds?.["Drone-1"] ? "ACTIVE" : "—"}
-            </span>
-            <span style={{ color: tacticalStatus?.feeds?.["Drone-2"] ? "#00ff66" : "rgba(255,255,255,0.5)" }}>
-              Drone-2: {tacticalStatus?.feeds?.["Drone-2"] ? "ACTIVE" : "—"}
-            </span>
+          <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.8)", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+            <span>Nodes: {graphData?.stats?.node_count ?? graphData?.nodes?.length ?? 0}</span>
+            <span>Area: {(graphData?.stats?.area_m2 ?? 0).toFixed(1)} m²</span>
+            {detections.length > 0 && (
+              <span>Detections: {detections.map((d) => d.class).join(", ") || "—"}</span>
+            )}
           </div>
         </div>
       </div>

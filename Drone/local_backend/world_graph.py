@@ -17,6 +17,7 @@ class ObjectCategory(str, Enum):
     HAZARD = "hazard"
     EXIT = "exit"
     CLEAR = "clear"
+    STRUCTURAL = "structural"
     UNKNOWN = "unknown"
 
 
@@ -50,9 +51,14 @@ class GraphNode:
     yaw_deg: float
     detections: List[Detection]
     image_b64: Optional[str] = None  # Optional: store thumbnail
+    source: str = "live"  # "live" | "imported"
+    depth_b64: Optional[str] = None  # Optional: depth map image (e.g. for imported)
+    local_x: Optional[float] = None  # When set (e.g. imported), used as pose instead of gps-derived
+    local_y: Optional[float] = None
+    local_z: Optional[float] = None
     
     def to_dict(self):
-        return {
+        out = {
             "node_id": self.node_id,
             "timestamp": self.timestamp,
             "gps_lat": self.gps_lat,
@@ -61,7 +67,11 @@ class GraphNode:
             "yaw_deg": self.yaw_deg,
             "detections": [d.to_dict() for d in self.detections],
             "image_b64": self.image_b64,
+            "source": self.source,
         }
+        if self.depth_b64 is not None:
+            out["depth_b64"] = self.depth_b64
+        return out
 
 
 class WorldGraph:
@@ -77,7 +87,10 @@ class WorldGraph:
         self.nodes: Dict[str, GraphNode] = {}
         self.node_count = 0
         self.last_position: Optional[Tuple[float, float, float]] = None
-        
+        # Imported video: explicit next/prev edges (CLIP-based; only 0.3 <= sim < 0.95 get edge)
+        self._imported_next: Dict[str, str] = {}
+        self._imported_prev: Dict[str, str] = {}
+
         # Category mappings for YOLO classes
         self.category_map = {
             # Survivors
@@ -183,6 +196,51 @@ class WorldGraph:
         
         return node
     
+    def add_imported_node(
+        self,
+        local_x: float,
+        local_y: float,
+        local_z: float,
+        yaw: float,
+        yolo_detections: List[Dict],
+        image_b64: Optional[str] = None,
+        depth_b64: Optional[str] = None,
+    ) -> GraphNode:
+        """Add a node from imported footage (local pose, no GPS)."""
+        node_id = f"node_{self.node_count:04d}"
+        self.node_count += 1
+        detections = []
+        for det in yolo_detections:
+            class_name = det.get("class", det.get("class_name", "unknown"))
+            confidence = det.get("confidence", 0.0)
+            bbox = det.get("bbox", [0, 0, 0, 0])
+            category = self.category_map.get(class_name, ObjectCategory.UNKNOWN)
+            distance = self._estimate_distance(bbox, max(0.1, local_z))
+            detections.append(Detection(
+                class_name=class_name,
+                confidence=confidence,
+                bbox=bbox,
+                distance_meters=distance,
+                category=category,
+            ))
+        node = GraphNode(
+            node_id=node_id,
+            timestamp=time.time(),
+            gps_lat=0.0,
+            gps_lon=0.0,
+            altitude_m=0.0,
+            yaw_deg=yaw,
+            detections=detections,
+            image_b64=image_b64,
+            source="imported",
+            depth_b64=depth_b64,
+            local_x=local_x,
+            local_y=local_y,
+            local_z=local_z,
+        )
+        self.nodes[node_id] = node
+        return node
+    
     def get_graph(self) -> Dict:
         """Return the entire graph as a dict."""
         return {
@@ -220,11 +278,159 @@ class WorldGraph:
                 result.append(node)
         return result
     
+    def _origin_pose(self) -> Optional[Tuple[float, float, float]]:
+        """First node's (lat, lon, alt) as origin for local coordinates."""
+        ordered = sorted(self.nodes.keys())
+        if not ordered:
+            return None
+        n = self.nodes[ordered[0]]
+        return (n.gps_lat, n.gps_lon, n.altitude_m)
+    
+    def get_pose_at_node(self, node_id: str) -> Optional[Tuple[float, float, float]]:
+        """Return (x, y, z) position in local meters for the given node.
+        Origin is the first node (by id order). Uses local_x/y/z when set (imported nodes)."""
+        if node_id not in self.nodes:
+            return None
+        n = self.nodes[node_id]
+        if n.local_x is not None and n.local_y is not None and n.local_z is not None:
+            return (n.local_x, n.local_y, n.local_z)
+        origin = self._origin_pose()
+        if origin is None:
+            return None
+        lat0, lon0, alt0 = origin
+        x = (n.gps_lon - lon0) * 111320 * math.cos(math.radians(lat0))
+        y = (n.gps_lat - lat0) * 110540
+        z = n.altitude_m - alt0
+        return (x, y, z)
+    
+    def get_neighbor_direction(self, node_id: str, direction: str) -> Optional[str]:
+        """Return node_id of the neighbor most in the given direction (forward, back, left, right).
+        Uses yaw at current node. Returns None if no neighbor in that direction."""
+        if node_id not in self.nodes or direction not in ("forward", "back", "left", "right"):
+            return None
+        pos = self.get_pose_at_node(node_id)
+        if pos is None:
+            return None
+        cx, cy, cz = pos
+        n = self.nodes[node_id]
+        yaw_rad = math.radians(n.yaw_deg)
+        # Forward = direction of yaw (x = east, y = north; yaw 0 = +x)
+        fx = math.cos(yaw_rad)
+        fy = math.sin(yaw_rad)
+        if direction == "forward":
+            dx, dy = fx, fy
+        elif direction == "back":
+            dx, dy = -fx, -fy
+        elif direction == "left":
+            dx, dy = -fy, fx
+        else:  # right
+            dx, dy = fy, -fx
+        best_id: Optional[str] = None
+        best_dot = -2.0
+        for other_id, other_node in self.nodes.items():
+            if other_id == node_id:
+                continue
+            op = self.get_pose_at_node(other_id)
+            if op is None:
+                continue
+            ox, oy, oz = op
+            vx = ox - cx
+            vy = oy - cy
+            dist_xy = math.sqrt(vx * vx + vy * vy)
+            if dist_xy < 0.01:
+                continue
+            vx /= dist_xy
+            vy /= dist_xy
+            dot = vx * dx + vy * dy
+            if dot > 0.25 and dot > best_dot:
+                best_dot = dot
+                best_id = other_id
+        return best_id
+
+    def link_imported(self, prev_id: str, next_id: str) -> None:
+        """Record navigable edge between two imported nodes (used when CLIP similarity in [0.3, 0.95))."""
+        if prev_id in self.nodes and next_id in self.nodes:
+            self._imported_next[prev_id] = next_id
+            self._imported_prev[next_id] = prev_id
+
+    def get_neighbor_by_order(self, node_id: str, direction: str) -> Optional[str]:
+        """Return next or previous node in visit order (for video-style navigation). direction is 'next' or 'prev'."""
+        if node_id not in self.nodes or direction not in ("next", "prev"):
+            return None
+        if direction == "next" and node_id in self._imported_next:
+            return self._imported_next[node_id]
+        if direction == "prev" and node_id in self._imported_prev:
+            return self._imported_prev[node_id]
+        ordered = sorted(self.nodes.keys())
+        try:
+            i = ordered.index(node_id)
+        except ValueError:
+            return None
+        if direction == "next" and i + 1 < len(ordered):
+            return ordered[i + 1]
+        if direction == "prev" and i - 1 >= 0:
+            return ordered[i - 1]
+        return None
+    
+    def get_path(self, start_id: str, end_id: str) -> List[str]:
+        """BFS path as list of node_ids. Graph is linear (visit order), so path is the ordered segment."""
+        ordered = sorted(self.nodes.keys())
+        if not ordered or start_id not in self.nodes or end_id not in self.nodes:
+            return []
+        try:
+            i = ordered.index(start_id)
+            j = ordered.index(end_id)
+        except ValueError:
+            return []
+        if i <= j:
+            return ordered[i : j + 1]
+        return ordered[j : i + 1][::-1]
+    
+    def to_3d_pointcloud(self) -> List[Tuple[float, float, float, float, float, float]]:
+        """Return list of (x, y, z, r, g, b) in local meters; RGB 0..1. One point per node, color by category."""
+        out: List[Tuple[float, float, float, float, float, float]] = []
+        origin = self._origin_pose()
+        if origin is None:
+            return out
+        lat0, lon0, alt0 = origin
+        # Category to RGB (0-1)
+        def cat_color(cat: ObjectCategory) -> Tuple[float, float, float]:
+            if cat == ObjectCategory.SURVIVOR:
+                return (0.0, 1.0, 0.4)
+            if cat == ObjectCategory.HAZARD:
+                return (1.0, 0.2, 0.2)
+            if cat == ObjectCategory.EXIT:
+                return (0.2, 0.5, 1.0)
+            if cat == ObjectCategory.STRUCTURAL:
+                return (1.0, 0.5, 0.0)
+            if cat == ObjectCategory.CLEAR:
+                return (0.5, 0.5, 0.5)
+            return (0.4, 0.4, 0.45)
+        for node_id in sorted(self.nodes.keys()):
+            n = self.nodes[node_id]
+            pose = self.get_pose_at_node(node_id)
+            if pose is None:
+                continue
+            x, y, z = pose
+            if n.source == "imported":
+                r, g, b = (1.0, 1.0, 1.0)
+            else:
+                cats = [d.category for d in n.detections]
+                if cats:
+                    cat = max(set(cats), key=cats.count)
+                    r, g, b = cat_color(cat)
+                else:
+                    r, g, b = (0.45, 0.45, 0.5)
+            out.append((x, y, z, r, g, b))
+        return out
+    
     def clear(self):
         """Clear all nodes from the graph."""
         self.nodes.clear()
         self.node_count = 0
         self.last_position = None
+        self._imported_next.clear()
+        self._imported_prev.clear()
     
     @staticmethod
     def _calculate_distance(

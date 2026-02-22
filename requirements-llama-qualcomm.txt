@@ -1,0 +1,13 @@
+# Optional: Llama-v3.2-3B-Instruct via Qualcomm AI Hub (for export to Genie / on-device)
+# Python 3.10 <= version < 3.14 required.
+#
+# Install:
+#   pip install -r requirements-llama-qualcomm.txt
+#
+# Then run from repo root:
+#   python scripts/setup_llama_qualcomm.py
+#
+# Or install only:
+#   pip install "qai-hub-models[llama-v3-2-3b-instruct]"
+
+qai-hub-models[llama-v3-2-3b-instruct]>=0.46.0

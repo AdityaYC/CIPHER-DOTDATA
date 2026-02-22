@@ -68,6 +68,8 @@ cd ../..
 
 **Requirements:** Python 3.12 (install from [python.org](https://www.python.org/downloads/), not the Microsoft Store), Node.js, webcam.
 
+**Agent on Qualcomm (Llama 3.2 3B on-device):** Run `python scripts/setup_llama_qualcomm.py` from repo root (needs [Qualcomm AI Hub](https://app.aihub.qualcomm.com) API token). Then add Genie runtime to `genie_bundle/`. See [genie_bundle/README.md](genie_bundle/README.md).
+
 ---
 
 ## What’s in the app
@@ -92,6 +94,7 @@ cd ../..
 | "Backend not running" | Start backend first: `.\start_backend.ps1` or run the `py -3.12 -m uvicorn ...` command above. |
 | Port 5173 in use | Vite will use 5174 or 5175 — use the URL shown in the terminal. |
 | YOLO not loading | Run `py -m pip install ultralytics`. The first run downloads `yolov8n.pt`. |
+| Agent answers are generic or "No LLM" | Install Ollama, run `ollama run llama3.2`, then restart the backend. See **Agent tab — Ollama** above. |
 
 ---
 

@@ -26,7 +26,7 @@ export const VERTICAL_STEP = 0.5;
 export const YAW_STEP_DEGREES = 90;
 
 export const DEFAULT_AGENT_COUNT = 2;
-export const MAX_AGENT_STEPS = 15;
+export const MAX_AGENT_STEPS = 20;
 
 // iPhone camera stream
 export const IPHONE_STREAM_URL =

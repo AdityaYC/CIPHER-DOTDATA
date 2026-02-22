@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  createSession,
   observeAgentStream,
   startAgentStream,
 } from "../api/agentStream";

@@ -24,9 +24,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from io import BytesIO
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image
 
@@ -35,6 +36,9 @@ _HERE = Path(__file__).resolve().parent
 _DRONE2_ROOT = _HERE.parent.parent
 if str(_DRONE2_ROOT) not in sys.path:
     sys.path.insert(0, str(_DRONE2_ROOT))
+# So "from world_graph import WorldGraph" works when cwd is repo root (e.g. run_drone_full.ps1)
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 # Optional Drone2 backend (camera, YOLO ONNX, advisory)
 _phantom = None
@@ -76,6 +80,7 @@ app.add_middleware(
 _PROJECT = _HERE.parent
 _DATA = _PROJECT / "data"
 _DRONE_FRONTEND_DIST = _PROJECT / "frontend" / "dist"
+_EXPORTS_DIR = _DRONE2_ROOT / "exports"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -361,11 +366,30 @@ class AgentRequest(BaseModel):
 # World graph for tactical map (same as Drone2 graph_api)
 # ---------------------------------------------------------------------------
 _world_graph = None
-try:
-    from world_graph import WorldGraph
-    _world_graph = WorldGraph()
-except Exception:
-    pass
+
+
+def _get_world_graph():
+    """Return world graph, creating it if needed so import/3D map always have one."""
+    global _world_graph
+    if _world_graph is not None:
+        return _world_graph
+    try:
+        from world_graph import WorldGraph
+        _world_graph = WorldGraph()
+        return _world_graph
+    except Exception:
+        try:
+            from .world_graph import WorldGraph
+            _world_graph = WorldGraph()
+            return _world_graph
+        except Exception as e:
+            print(f"World graph not loaded: {e}")
+            return None
+    return None
+
+
+# Ensure world graph exists at load (so ingest loop etc. can use it)
+_world_graph = _get_world_graph()
 
 # ---------------------------------------------------------------------------
 # Drone2 tactical state (laptop camera, YOLO, advisory)
@@ -383,6 +407,40 @@ phantom_state = {
     "yolo_error": None,  # set if Drone YOLO load or run fails
     "agent_response": {"answer": "", "node_ids": [], "ts": 0.0},  # tactical query (voice/text) for Agent tab
 }
+
+# Combined agent (spatial + knowledge): 3D Map AGENT mode
+agent_state = {
+    "ready": False,
+    "initializing": True,
+    "last_result": None,  # OrchestratorResult for UI highlight/path
+    "running": False,
+}
+
+
+async def _agent_init_background():
+    """Pre-load CLIP, Chroma + manuals, Genie check. Sets agent_state.ready."""
+    global agent_state
+    try:
+        from clip_navigator import load_clip
+        load_clip()
+    except Exception as e:
+        print(f"  Agent (CLIP): skip ({e})")
+    try:
+        from knowledge_agent import load_vector_db
+        wg = _get_world_graph()
+        load_vector_db(wg)
+    except Exception as e:
+        print(f"  Agent (vector DB): skip ({e})")
+    try:
+        from backend.genie_runner import is_available
+        if is_available():
+            print("  Agent (Genie): ready")
+    except Exception:
+        pass
+    agent_state["initializing"] = False
+    agent_state["ready"] = True
+
+
 phantom_camera_manager = None
 phantom_yolo_detector = None
 _phantom_model_path = _DRONE2_ROOT / "models" / "yolov8_det.onnx"
@@ -723,14 +781,23 @@ async def startup_event():
         asyncio.create_task(_world_graph_ingest_loop())
         print("  World graph: ingesting (map will populate)")
 
-    # 4) Agent tab: load emergency manuals into vector DB (optional; backend must be on PYTHONPATH)
+    # 4) Agent tab: load emergency manuals into vector DB (data/ and data/emergency_manuals/)
     try:
+        from emergency_manuals import ensure_all_manuals
+        ensure_all_manuals()
         from backend.vector_db import load_manuals_from_data_dir
         n = load_manuals_from_data_dir()
+        manuals_dir = str(_DRONE2_ROOT / "data" / "emergency_manuals")
+        if Path(manuals_dir).is_dir():
+            n2 = load_manuals_from_data_dir(manuals_dir)
+            n += n2
         if n > 0:
             print(f"  Agent (vector DB): loaded {n} manual chunks")
     except Exception as e:
         print(f"  Agent (vector DB): skip ({e})")
+
+    # 5) Combined agent (spatial + knowledge): pre-load in background
+    asyncio.create_task(_agent_init_background())
 
     # Summary so you can see why webcam/YOLO might not show
     cam_ok = _simple_capture is not None and _simple_capture.isOpened()
@@ -847,6 +914,144 @@ def get_graph():
     return _world_graph.get_graph()
 
 
+@app.get("/api/graph_3d")
+def get_graph_3d():
+    """3D Map tab: point cloud, path, nodes with poses, and stats."""
+    if _world_graph is None:
+        return {
+            "pointcloud": [],
+            "path": [],
+            "nodes": [],
+            "stats": {
+                "node_count": 0,
+                "point_count": 0,
+                "area_m2": 0.0,
+                "survivors": 0,
+                "hazards": 0,
+                "exits": 0,
+                "structural": 0,
+            },
+        }
+    try:
+        from pointcloud_builder import build_pointcloud
+        points = build_pointcloud(_world_graph)
+    except Exception:
+        points = _world_graph.to_3d_pointcloud()
+    ordered = sorted(_world_graph.nodes.keys())
+    path = []
+    nodes_payload = []
+    for node_id in ordered:
+        pos = _world_graph.get_pose_at_node(node_id)
+        if pos is not None:
+            path.append({"x": pos[0], "y": pos[1], "z": pos[2]})
+        n = _world_graph.nodes[node_id]
+        d = n.to_dict()
+        pos = _world_graph.get_pose_at_node(node_id)
+        d["pose"] = [float(pos[0]), float(pos[1]), float(pos[2])] if pos else None
+        d["structural_risk_score"] = 0.0  # placeholder
+        nodes_payload.append(d)
+    st = _world_graph.get_stats()
+    cc = st.get("category_counts", {})
+    return {
+        "pointcloud": [{"x": p[0], "y": p[1], "z": p[2], "r": p[3], "g": p[4], "b": p[5]} for p in points],
+        "path": path,
+        "nodes": nodes_payload,
+        "stats": {
+            "node_count": st.get("node_count", 0),
+            "point_count": len(points),
+            "area_m2": round(st.get("coverage_m2", 0), 2),
+            "survivors": cc.get("survivor", 0),
+            "hazards": cc.get("hazard", 0),
+            "exits": cc.get("exit", 0),
+            "structural": cc.get("structural", 0),
+        },
+    }
+
+
+@app.get("/api/graph_3d/neighbor")
+def get_graph_3d_neighbor(node_id: str, direction: str):
+    """Get neighbor node. direction: forward, back, left, right (spatial) or next, prev (video order)."""
+    wg = _get_world_graph()
+    if wg is None:
+        raise HTTPException(status_code=404, detail="No world graph")
+    if direction not in ("forward", "back", "left", "right", "next", "prev"):
+        raise HTTPException(status_code=400, detail="direction must be forward, back, left, right, next, or prev")
+    if direction in ("next", "prev"):
+        neighbor_id = wg.get_neighbor_by_order(node_id, direction)
+    else:
+        neighbor_id = wg.get_neighbor_direction(node_id, direction)
+    if neighbor_id is None:
+        raise HTTPException(status_code=404, detail="No neighbor in that direction")
+    n = wg.nodes[neighbor_id]
+    d = n.to_dict()
+    pos = wg.get_pose_at_node(neighbor_id)
+    d["pose"] = [float(pos[0]), float(pos[1]), float(pos[2])] if pos else None
+    d["structural_risk_score"] = 0.0
+    return {"node_id": neighbor_id, "node": d}
+
+
+@app.post("/api/import_video")
+@app.post("/api/import_video/")  # allow trailing slash so proxy/redirect doesn't turn POST into GET
+def import_video(file: Optional[UploadFile] = File(None, alias="file")):
+    """Upload video (MP4/AVI/MOV); process in background. Use multipart form with key 'file'."""
+    wg = _get_world_graph()
+    if wg is None:
+        raise HTTPException(status_code=400, detail="No world graph")
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file in request. Send multipart form with field 'file'.")
+    filename = getattr(file, "filename", None) or ""
+    if not filename.strip():
+        raise HTTPException(status_code=400, detail="No file uploaded (empty filename)")
+    ext = (Path(filename).suffix or "").lower()
+    if ext not in (".mp4", ".avi", ".mov", ".mkv", ".webm"):
+        raise HTTPException(status_code=400, detail=f"Use MP4, AVI, MOV, MKV, or WEBM (e.g. YouTube downloads). Got: {ext or 'no extension'}")
+    import tempfile
+    from video_import import run_import_async, get_import_status
+    if get_import_status().get("status") == "running":
+        raise HTTPException(status_code=409, detail="Import already in progress")
+    try:
+        contents = file.file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+    if not contents:
+        raise HTTPException(status_code=400, detail="File is empty")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+    tmp.write(contents)
+    tmp.close()
+    run_import_async(tmp.name, wg)
+    return {"success": True, "message": "Import started. Poll /api/import_video/status for progress."}
+
+
+@app.get("/api/import_video/status")
+def import_video_status():
+    """Progress of video import: status, current, total, message."""
+    try:
+        from video_import import get_import_status
+        return get_import_status()
+    except Exception:
+        return {"status": "idle", "current": 0, "total": 0, "message": ""}
+
+
+@app.post("/api/export_vr")
+def export_vr():
+    """Export PLY + offline VR viewer HTML to exports/; copy three.min.js if needed. Returns URL to open."""
+    if _world_graph is None:
+        raise HTTPException(status_code=400, detail="No world graph")
+    try:
+        from vr_exporter import run_export
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="vr_exporter failed: " + str(e))
+    _EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ply_path, html_path = run_export(_world_graph, str(_EXPORTS_DIR))
+    # Copy three.min.js from frontend node_modules if present
+    three_src = _PROJECT / "frontend" / "node_modules" / "three" / "build" / "three.min.js"
+    three_dst = _EXPORTS_DIR / "three.min.js"
+    if three_src.exists() and not three_dst.exists():
+        import shutil
+        shutil.copy2(three_src, three_dst)
+    return {"url": "/exports/vr_viewer.html", "success": True}
+
+
 @app.get("/api/status")
 def api_status():
     camera_ready = (
@@ -926,61 +1131,158 @@ def api_feed_processed(drone_id: str):
 def api_agent_response():
     """Last agent answer and node_ids for Agent tab UI."""
     r = phantom_state.get("agent_response", {})
-    return {"answer": r.get("answer", ""), "node_ids": r.get("node_ids", []), "ts": r.get("ts", 0)}
+    return {
+        "answer": r.get("answer", ""),
+        "node_ids": r.get("node_ids", []),
+        "ts": r.get("ts", 0),
+        "confidence": r.get("confidence", 0.75),
+        "agent_used": r.get("agent_used", "KNOWLEDGE"),
+        "recommended_action": r.get("recommended_action", ""),
+    }
+
+
+async def _run_voice_query_with_text(text: str):
+    """Run query_agent with transcribed/text query; update phantom_state; return response dict."""
+    _root = str(_DRONE2_ROOT)
+    _backend = str(_DRONE2_ROOT / "backend")
+    for p in (_root, _backend):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from backend.query_agent import query_agent
+    except ImportError:
+        import importlib.util
+        _qpath = _DRONE2_ROOT / "backend" / "query_agent.py"
+        _spec = importlib.util.spec_from_file_location("query_agent", _qpath, submodule_search_locations=[_backend])
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        query_agent = _mod.query_agent
+
+    spatial_answer = ""
+    spatial_node_ids = []
+    wg = _get_world_graph()
+    if wg is not None and getattr(wg, "nodes", None) and len(wg.nodes) >= 3:
+        q = text.lower()
+        spatial_triggers = ("where", "find", "locate", "show me", "in the feed", "spot", "which node", "which frame", "see the", "saw the", "was the", "extinguisher", "person", "exit", "door", "fire", "hazard")
+        if any(t in q for t in spatial_triggers):
+            nodes_with_frames = sum(1 for n in wg.nodes.values() if getattr(n, "image_b64", None))
+            if nodes_with_frames >= 2:
+                def _spatial_search():
+                    try:
+                        from clip_navigator import (
+                            find_best_node,
+                            find_top_k_nodes,
+                            describe_node,
+                            find_nodes_by_detection_class,
+                        )
+                        # 1) Prefer nodes where YOLO detections match the query (Manual/import frames)
+                        by_det = find_nodes_by_detection_class(text, wg)
+                        if by_det:
+                            best_id = by_det[0][0]
+                            top_ids = [nid for nid, _ in by_det[:3]]
+                            desc = describe_node(best_id, wg)
+                            return best_id, top_ids, desc
+                        # 2) Fall back to CLIP visual similarity
+                        best = find_best_node(text, wg)
+                        if best:
+                            top3 = find_top_k_nodes(text, wg, k=3)
+                            desc = describe_node(best, wg)
+                            return best, top3, desc
+                    except Exception:
+                        return None, [], ""
+                    return None, [], ""
+                loop = asyncio.get_event_loop()
+                best_id, top_ids, desc = await loop.run_in_executor(None, _spatial_search)
+                if best_id:
+                    spatial_node_ids = [best_id] + [n for n in top_ids if n != best_id][:2]
+                    spatial_answer = f"Found in the feed at this spot (see highlighted nodes below). {desc}"
+
+    # Only run knowledge (manuals/vector DB) when we don't have a spatial match — show just the answer to what was asked
+    answer = ""
+    node_ids: List[str] = []
+    confidence = 0.75
+    recommended_action = ""
+    agent_used = "KNOWLEDGE"
+    if spatial_answer:
+        # Spatial question answered from feed: return only that, no manual dump
+        answer = spatial_answer
+        node_ids = list(spatial_node_ids)
+        agent_used = "SPATIAL"
+        confidence = 0.9
+    else:
+        def _run():
+            get_graph_callback = _world_graph.get_graph if _world_graph else None
+            return query_agent(text, top_k=3, get_graph_callback=get_graph_callback)
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        answer = result.get("answer", "")
+        node_ids = list(result.get("node_ids", []))
+        confidence = float(result.get("confidence", 0.75))
+        recommended_action = (result.get("recommended_action") or "").strip()
+    phantom_state["agent_response"] = {
+        "answer": answer, "node_ids": node_ids, "text": text, "ts": time.time(),
+        "confidence": confidence, "agent_used": agent_used, "recommended_action": recommended_action,
+    }
+    return {
+        "answer": answer, "node_ids": node_ids, "text": text,
+        "confidence": confidence, "agent_used": agent_used, "recommended_action": recommended_action,
+    }
+
+
+@app.post("/api/voice_upload")
+async def api_voice_upload(audio: UploadFile = File(..., alias="audio")):
+    """Accept audio file (multipart form 'audio'); transcribe with Whisper and run tactical query. Use this for browser voice recording."""
+    try:
+        if str(_DRONE2_ROOT) not in sys.path:
+            sys.path.insert(0, str(_DRONE2_ROOT))
+        from backend.voice_input import transcribe_audio
+        wav_bytes = await audio.read()
+        if not wav_bytes or len(wav_bytes) == 0:
+            return {"answer": "Audio was empty. Record for a few seconds then click STOP.", "node_ids": [], "text": ""}
+        loop = asyncio.get_event_loop()
+        text = await loop.run_in_executor(None, transcribe_audio, wav_bytes)
+        if not (text or "").strip():
+            return {"answer": "No speech detected. Try speaking clearly and recording a bit longer.", "node_ids": [], "text": ""}
+        return await _run_voice_query_with_text((text or "").strip())
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"voice_upload: {e}", exc_info=True)
+        return {"answer": f"Voice failed: {e}. Install: pip install transformers soundfile pydub; for WebM install ffmpeg.", "node_ids": [], "text": ""}
 
 
 @app.post("/api/voice_query")
 async def api_voice_query(request: Request):
-    """Text or audio query: runs query_agent (vector DB + Genie). Returns answer and node_ids."""
+    """Text (JSON) or legacy multipart: runs query_agent. For browser voice, use POST /api/voice_upload with form 'audio'."""
     try:
-        content_type = request.headers.get("content-type", "")
+        content_type = (request.headers.get("content-type") or "").lower()
         text = ""
         if "application/json" in content_type:
             body = await request.json()
             text = (body.get("text") or "").strip()
         elif "multipart/form-data" in content_type:
             form = await request.form()
-            if "audio" in form:
+            upload = form.get("audio")
+            if upload is None:
+                for key in form:
+                    v = form[key]
+                    if hasattr(v, "read"):
+                        upload = v
+                        break
+            if upload is not None and hasattr(upload, "read"):
                 if str(_DRONE2_ROOT) not in sys.path:
                     sys.path.insert(0, str(_DRONE2_ROOT))
-                from backend.voice_input import record_and_transcribe, transcribe_audio
+                from backend.voice_input import transcribe_audio
                 loop = asyncio.get_event_loop()
-                file = form["audio"]
-                if file and hasattr(file, "read"):
-                    wav_bytes = await file.read()
-                    text = await loop.run_in_executor(None, transcribe_audio, wav_bytes)
-                else:
-                    text = await loop.run_in_executor(None, record_and_transcribe)
+                wav_bytes = await upload.read()
+                if not wav_bytes or len(wav_bytes) == 0:
+                    phantom_state["agent_response"] = {"answer": "Audio was empty. Record for a few seconds then stop.", "node_ids": [], "text": "", "ts": time.time()}
+                    return {"answer": phantom_state["agent_response"]["answer"], "node_ids": [], "text": ""}
+                text = await loop.run_in_executor(None, transcribe_audio, wav_bytes)
             else:
                 text = (form.get("text") or "").strip()
         if not text:
-            phantom_state["agent_response"] = {"answer": "No text or audio received.", "node_ids": [], "ts": time.time()}
-            return {"answer": phantom_state["agent_response"]["answer"], "node_ids": []}
-        # Ensure repo root and backend are on path so backend.query_agent and its submodules resolve
-        _root = str(_DRONE2_ROOT)
-        _backend = str(_DRONE2_ROOT / "backend")
-        for p in (_root, _backend):
-            if p not in sys.path:
-                sys.path.insert(0, p)
-        try:
-            from backend.query_agent import query_agent
-        except ImportError:
-            import importlib.util
-            _qpath = _DRONE2_ROOT / "backend" / "query_agent.py"
-            _spec = importlib.util.spec_from_file_location("query_agent", _qpath, submodule_search_locations=[_backend])
-            _mod = importlib.util.module_from_spec(_spec)
-            _spec.loader.exec_module(_mod)
-            query_agent = _mod.query_agent
-        def _run():
-            get_graph_callback = _world_graph.get_graph if _world_graph else None
-            return query_agent(text, top_k=3, get_graph_callback=get_graph_callback)
-        result = await asyncio.get_event_loop().run_in_executor(None, _run)
-        phantom_state["agent_response"] = {
-            "answer": result.get("answer", ""),
-            "node_ids": result.get("node_ids", []),
-            "ts": time.time(),
-        }
-        return {"answer": phantom_state["agent_response"]["answer"], "node_ids": phantom_state["agent_response"]["node_ids"]}
+            phantom_state["agent_response"] = {"answer": "No text or audio received. Use VOICE button and POST to /api/voice_upload, or send JSON { \"text\": \"...\" } to this endpoint.", "node_ids": [], "text": "", "ts": time.time()}
+            return {"answer": phantom_state["agent_response"]["answer"], "node_ids": [], "text": ""}
+        return await _run_voice_query_with_text(text)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"voice_query: {e}", exc_info=True)
@@ -1005,6 +1307,54 @@ def api_sync_vector_graph():
         import logging
         logging.getLogger(__name__).warning(f"sync_vector_graph: {e}")
         return {"synced": 0}
+
+
+# ---------------------------------------------------------------------------
+# Combined agent (spatial + knowledge) for 3D Map AGENT mode
+# ---------------------------------------------------------------------------
+
+@app.get("/api/agent/status")
+def api_agent_status():
+    """Agent init status: ready, initializing, running. Last result highlights for tactical map."""
+    last = agent_state.get("last_result")
+    return {
+        "ready": agent_state.get("ready", False),
+        "initializing": agent_state.get("initializing", True),
+        "running": agent_state.get("running", False),
+        "highlighted_node_ids": getattr(last, "highlighted_node_ids", []) if last else [],
+    }
+
+
+class AgentRunBody(BaseModel):
+    query: str
+
+
+@app.post("/api/agent/run")
+async def api_agent_run(body: AgentRunBody):
+    """Run combined agent (spatial + knowledge). Returns answer, highlighted_node_ids, path_to_navigate, etc."""
+    wg = _get_world_graph()
+    if wg is None:
+        raise HTTPException(status_code=400, detail="No world graph")
+    agent_state["running"] = True
+    try:
+        from agent_orchestrator import run_agent
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: run_agent(body.query or "", wg))
+        agent_state["last_result"] = result
+        return {
+            "answer_text": result.answer_text,
+            "highlighted_node_ids": result.highlighted_node_ids,
+            "path_to_navigate": result.path_to_navigate,
+            "recommended_action": result.recommended_action,
+            "confidence": result.confidence,
+            "agent_used": result.agent_used,
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"agent/run: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        agent_state["running"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1517,11 @@ async def live_detections(run_llama: bool = False):
 # ---------------------------------------------------------------------------
 # Serve Drone React UI (frontend/dist) — check at request time so no restart needed after build
 # ---------------------------------------------------------------------------
+
+# Serve VR export files (must be before catch-all)
+_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/exports", StaticFiles(directory=str(_EXPORTS_DIR)), name="exports")
+
 
 @app.get("/")
 def serve_root():

@@ -27,6 +27,14 @@ export function ModeSwitch() {
       >
         Replay
       </NavLink>
+      <NavLink
+        to="/3d-map"
+        className={({ isActive }) =>
+          `mode-switch-item ${isActive ? "active" : ""}`
+        }
+      >
+        3D World
+      </NavLink>
     </nav>
   );
 }
