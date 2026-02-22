@@ -177,7 +177,7 @@ export function AutomaticPage() {
   const detCount = job?.detections_by_frame?.[frameIdx]?.length ?? 0;
 
   return (
-    <section style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "#0a0f19" }}>
+    <section style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", background: "#0a0f19" }}>
 
       {/* ── Top bar: upload + status ── */}
       <div style={{
